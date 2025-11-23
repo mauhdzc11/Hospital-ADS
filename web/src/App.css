@@ -188,13 +188,21 @@ body {
   font-weight: 600;
 }
 
-/* Formularios */
-.form-login,
-.form-registro {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+.form-field input,
+.form-field textarea,
+.form-field select {
+  border-radius: 4px;
+  border: 1px solid var(--gris-borde);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.9rem;
+  background-color: #fff;
 }
+
+.form-field select:focus {
+  outline: 2px solid var(--azul-claro);
+  border-color: var(--azul-hospital);
+}
+
 
 .form-field {
   display: flex;

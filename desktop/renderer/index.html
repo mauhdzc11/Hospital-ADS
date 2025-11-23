@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Hospital ADS - Escritorio</title>
+    <style>
+      :root {
+        --azul-hospital: #0b5394;
+        --gris-fondo: #f3f4f6;
+        --gris-borde: #d1d5db;
+        --texto-principal: #111827;
+        --texto-secundario: #4b5563;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background-color: var(--gris-fondo);
+        color: var(--texto-principal);
+      }
+
+      .app-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        background-color: white;
+        border-bottom: 1px solid var(--gris-borde);
+        padding: 0.75rem 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .hospital-logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background-color: var(--azul-hospital);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 1.2rem;
+      }
+
+      .header-title {
+        margin: 0;
+        font-size: 1.1rem;
+        font-weight: 600;
+      }
+
+      .header-subtitle {
+        margin: 0;
+        font-size: 0.85rem;
+        color: var(--texto-secundario);
+      }
+
+      main {
+        padding: 1.5rem;
+        display: flex;
+        justify-content: center;
+      }
+
+      .card {
+        background-color: white;
+        border-radius: 6px;
+        border: 1px solid var(--gris-borde);
+        padding: 1.5rem;
+        max-width: 800px;
+        width: 100%;
+      }
+
+      .card-title {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.1rem;
+      }
+
+      .card-text {
+        margin: 0 0 1rem 0;
+        font-size: 0.9rem;
+        color: var(--texto-secundario);
+      }
+
+      .form-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.9rem;
+      }
+
+      .form-field label {
+        color: var(--texto-secundario);
+      }
+
+      .form-field input {
+        border-radius: 4px;
+        border: 1px solid var(--gris-borde);
+        padding: 0.35rem 0.5rem;
+        font-size: 0.9rem;
+      }
+
+      .form-actions {
+        margin-top: 0.75rem;
+      }
+
+      .btn {
+        padding: 0.4rem 1rem;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 0.9rem;
+        cursor: pointer;
+      }
+
+      .btn-primary {
+        background-color: var(--azul-hospital);
+        border-color: var(--azul-hospital);
+        color: white;
+      }
+
+      .btn-outline {
+        background-color: white;
+        border-color: var(--azul-hospital);
+        color: var(--azul-hospital);
+      }
+
+      .nota-ayuda {
+        margin-top: 0.75rem;
+        font-size: 0.8rem;
+        color: var(--texto-secundario);
+      }
+
+      .rol-preview {
+        margin-top: 1rem;
+        padding: 0.75rem;
+        border-radius: 4px;
+        border: 1px dashed var(--gris-borde);
+        font-size: 0.85rem;
+        color: var(--texto-secundario);
+      }
+
+      .dashboard-grid {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 1rem;
+      }
+
+      .sidebar {
+        border-right: 1px solid var(--gris-borde);
+        padding-right: 1rem;
+      }
+
+      .sidebar h3 {
+        margin-top: 0;
+        font-size: 0.95rem;
+      }
+
+      .sidebar ul {
+        list-style: none;
+        padding-left: 0;
+        margin: 0;
+        font-size: 0.9rem;
+      }
+
+      .sidebar li {
+        margin-bottom: 0.35rem;
+      }
+
+      .sidebar button {
+        width: 100%;
+        text-align: left;
+      }
+
+      .panel-contenido {
+        font-size: 0.9rem;
+      }
+
+      .panel-contenido h3 {
+        margin-top: 0;
+      }
+
+      .texto-suave {
+        color: var(--texto-secundario);
+      }
+      
+      .tabla-lista {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.tabla-lista th,
+.tabla-lista td {
+  border: 1px solid var(--gris-borde);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+
+.tabla-lista thead {
+  background-color: #e5f1fb;
+}
+
+.btn-sm {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.detalle-expediente {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--gris-borde);
+  font-size: 0.9rem;
+}
+
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header>
+        <div class="header-left">
+          <div class="hospital-logo">🏥</div>
+          <div>
+            <p class="header-title">Hospital ADS</p>
+            <p class="header-subtitle">Aplicación de escritorio</p>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <!-- PANTALLA DE LOGIN -->
+        <section class="card" id="login-card">
+          <h2 class="card-title">Inicio de sesión</h2>
+          <p class="card-text">
+            Ingresa con tu usuario del hospital. Dependiendo de tu rol (médico,
+            enfermería o administración) verás diferentes opciones.
+          </p>
+
+          <form id="login-form">
+            <div class="form-field">
+              <label for="usuario">Usuario</label>
+              <input
+                id="usuario"
+                name="usuario"
+                type="text"
+                autocomplete="username"
+                required
+              />
+            </div>
+
+            <div className="form-field">
+              <label for="contrasena">Contraseña</label>
+              <input
+                id="contrasena"
+                name="contrasena"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">
+                Ingresar
+              </button>
+            </div>
+          </form>
+
+          <p class="nota-ayuda">
+            Esta es solo la pantalla inicial. Después conectaremos este login
+            con el backend para validar médicos, enfermería y administradores.
+          </p>
+
+          <div class="rol-preview" id="rol-preview">
+            Ingresa tu usuario y contraseña para continuar.
+          </div>
+        </section>
+
+        <!-- DASHBOARD MÉDICO -->
+        <section class="card" id="panel-medico" style="display: none">
+          <h2 class="card-title">Módulo Médico</h2>
+          <p class="card-text texto-suave" id="info-medico"></p>
+
+          <div class="dashboard-grid">
+            <aside class="sidebar">
+              <h3>Menú</h3>
+              <ul>
+                <li>
+                  <button class="btn btn-outline" data-vista="pacientes">
+                    Pacientes
+                  </button>
+                </li>
+                <li>
+                  <button class="btn btn-outline" data-vista="agenda">
+                    Agenda de citas
+                  </button>
+                </li>
+                <li>
+                  <button class="btn btn-outline" data-vista="notas">
+                    Notas de evolución
+                  </button>
+                </li>
+                <li>
+                  <button class="btn btn-outline" data-vista="ordenes">
+                    Órdenes de laboratorio
+                  </button>
+                </li>
+              </ul>
+            </aside>
+
+            <section class="panel-contenido" id="contenido-medico">
+              <h3>Bienvenido(a) al módulo médico</h3>
+              <p class="texto-suave">
+                Aquí podrás consultar pacientes, registrar notas de evolución,
+                generar órdenes de laboratorio y revisar resultados.
+              </p>
+              <p class="texto-suave">
+                En el siguiente paso conectaremos cada opción con el backend y
+                la base de datos.
+              </p>
+            </section>
+          </div>
+        </section>
+
+        <!-- DASHBOARD ENFERMERÍA -->
+        <section class="card" id="panel-enfermeria" style="display: none">
+          <h2 class="card-title">Módulo de Enfermería</h2>
+          <p class="card-text texto-suave" id="info-enfermeria"></p>
+          <p class="texto-suave">
+            Desde este módulo podrás registrar notas de enfermería, apoyar en
+            el seguimiento de indicaciones médicas y consultar información
+            básica de los pacientes asignados.
+          </p>
+          <p class="texto-suave">
+            Más adelante agregaremos las pantallas específicas (registro de
+            signos vitales, evolución de enfermería, etc.).
+          </p>
+        </section>
+
+        <!-- DASHBOARD ADMIN -->
+        <section class="card" id="panel-admin" style="display: none">
+          <h2 class="card-title">Módulo de Administración</h2>
+          <p class="card-text texto-suave" id="info-admin"></p>
+          <p class="texto-suave">
+            Aquí se administran usuarios del sistema (médicos, enfermería,
+            recepción) y catálogos básicos del hospital.
+          </p>
+          <p class="texto-suave">
+            En pasos posteriores implementaremos la creación de usuarios y la
+            asignación de roles usando la base de datos que ya tienes.
+          </p>
+        </section>
+      </main>
+    </div>
+
+    <script src="renderer.js" type="module"></script>
+  </body>
+</html>

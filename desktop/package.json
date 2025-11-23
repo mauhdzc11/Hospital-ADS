@@ -1,0 +1,12 @@
+{
+  "name": "hospital-ads-desktop",
+  "version": "1.0.0",
+  "description": "Aplicación de escritorio para personal del Hospital ADS",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
