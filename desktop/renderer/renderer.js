@@ -18,6 +18,23 @@ const BACKEND_URL = "http://localhost:3000";
 // Aquí guardamos al médico logueado (con id_medico)
 let medicoActual = null;
 
+// Utilidades de fecha/hora para mostrar datetimes en hora local
+function toLocalInputDateTime(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const tzOffset = d.getTimezoneOffset() * 60000; // minutos -> ms
+  const local = new Date(d.getTime() - tzOffset);
+  return local.toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm"
+}
+
+function formatDateTimeDisplay(value) {
+  const input = toLocalInputDateTime(value);
+  if (!input) return "";
+  return input.replace("T", " "); // "YYYY-MM-DD HH:mm"
+}
+
+
 // -------------------- LOGIN --------------------
 
 form.addEventListener("submit", async (event) => {
@@ -113,8 +130,9 @@ function mostrarPanelMedico(data) {
 }
 
 function actualizarVistaMedico(contenido, vista) {
+  // 👉 Ahora usamos la versión nueva que sí abre el expediente con pestañas
   if (vista === "pacientes") {
-    cargarPacientes(contenido);
+    cargarPacientesMedico(contenido);
     return;
   }
 
@@ -123,6 +141,8 @@ function actualizarVistaMedico(contenido, vista) {
     return;
   }
 
+  // Estas vistas “genéricas” ya casi no las usarás,
+  // pero las dejamos por si el profe quiere verlas.
   if (vista === "notas") {
     contenido.innerHTML = `
       <h3>Notas de evolución</h3>
@@ -149,6 +169,7 @@ function actualizarVistaMedico(contenido, vista) {
   }
 }
 
+
 // -------------------- PANEL ENFERMERÍA --------------------
 
 function mostrarPanelEnfermeria(data) {
@@ -173,192 +194,13 @@ function mostrarPanelAdmin(data, sinRol = false) {
   }
 }
 
-// -------------------- PACIENTES + RESUMEN EXPEDIENTE --------------------
-
-async function cargarPacientes(contenido) {
-  contenido.innerHTML = `
-    <h3>Pacientes</h3>
-    <p class="texto-suave">
-      Cargando lista de pacientes desde el sistema...
-    </p>
-  `;
-
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/pacientes`);
-    const data = await res.json().catch(() => []);
-
-    if (!res.ok) {
-      throw new Error(data.error || "No se pudo obtener la lista de pacientes.");
-    }
-
-    if (!Array.isArray(data) || data.length === 0) {
-      contenido.innerHTML = `
-        <h3>Pacientes</h3>
-        <p class="texto-suave">
-          No se encontraron pacientes registrados.
-        </p>
-      `;
-      return;
-    }
-
-    let html = `
-      <h3>Pacientes</h3>
-      <p class="texto-suave">
-        Selecciona un paciente para ver un resumen de su expediente clínico.
-      </p>
-      <table class="tabla-lista">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Nombre completo</th>
-            <th>CURP</th>
-            <th>Fecha nac.</th>
-            <th>Estatus</th>
-            <th>Acciones</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-
-    for (const p of data) {
-      const nombreCompleto = `${p.nombre} ${p.apellido_paterno || ""} ${
-        p.apellido_materno || ""
-      }`.trim();
-
-      const fechaNac = p.fecha_nacimiento
-        ? p.fecha_nacimiento.slice(0, 10)
-        : "-";
-
-      html += `
-        <tr>
-          <td>${p.id_paciente}</td>
-          <td>${nombreCompleto}</td>
-          <td>${p.curp || "-"}</td>
-          <td>${fechaNac}</td>
-          <td>${p.estatus_afiliacion || "-"}</td>
-          <td>
-            <button
-              class="btn btn-outline btn-sm"
-              data-id-paciente="${p.id_paciente}"
-            >
-              Ver expediente
-            </button>
-          </td>
-        </tr>
-      `;
-    }
-
-    html += `
-        </tbody>
-      </table>
-      <div id="detalle-expediente" class="detalle-expediente"></div>
-    `;
-
-    contenido.innerHTML = html;
-
-    contenido
-      .querySelectorAll("[data-id-paciente]")
-      .forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const id = btn.getAttribute("data-id-paciente");
-          cargarResumenExpediente(id);
-        });
-      });
-  } catch (err) {
-    console.error(err);
-    contenido.innerHTML = `
-      <h3>Pacientes</h3>
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
-  }
-}
-
-async function cargarResumenExpediente(idPaciente) {
-  const contDetalle = document.getElementById("detalle-expediente");
-  if (!contDetalle) return;
-
-  contDetalle.innerHTML = `
-    <h4>Resumen de expediente</h4>
-    <p class="texto-suave">Cargando información...</p>
-  `;
-
-  try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/pacientes/${idPaciente}/resumen-expediente`
-    );
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      throw new Error(data.error || "No se pudo obtener el expediente.");
-    }
-
-    const p = data.paciente;
-    const e = data.expediente;
-
-    const nombreCompleto = `${p.nombre} ${p.apellido_paterno || ""} ${
-      p.apellido_materno || ""
-    }`.trim();
-
-    let html = `
-      <h4>Resumen de expediente</h4>
-      <p><strong>Paciente:</strong> ${nombreCompleto}</p>
-      <p><strong>CURP:</strong> ${p.curp || "-"}</p>
-      <p><strong>Sexo:</strong> ${p.sexo || "-"}</p>
-      <p><strong>Teléfono:</strong> ${p.telefono || "-"}</p>
-      <p><strong>Correo:</strong> ${p.correo || "-"}</p>
-      <p><strong>Estatus afiliación:</strong> ${
-        p.estatus_afiliacion || "-"
-      }</p>
-    `;
-
-    if (e) {
-      html += `
-        <hr/>
-        <p><strong>ID expediente:</strong> ${e.id_expediente}</p>
-        <p><strong>Fecha de apertura:</strong> ${
-          e.fecha_apertura ? e.fecha_apertura.slice(0, 10) : "-"
-        }</p>
-        <p><strong>Estado:</strong> ${e.estado_expediente || "-"}</p>
-        <p><strong>Última actualización:</strong> ${
-          e.fecha_ultima_actualizacion
-            ? e.fecha_ultima_actualizacion.toString().replace("T", " ").slice(0, 19)
-            : "-"
-        }</p>
-        <p><strong>Observaciones:</strong> ${
-          e.observaciones || "Sin observaciones registradas."
-        }</p>
-      `;
-    } else {
-      html += `
-        <hr/>
-        <p class="texto-suave">
-          Este paciente aún no tiene expediente clínico registrado en el sistema.
-        </p>
-      `;
-    }
-
-    contDetalle.innerHTML = html;
-  } catch (err) {
-    console.error(err);
-    contDetalle.innerHTML = `
-      <h4>Resumen de expediente</h4>
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
-  }
-}
 
 // -------------------- AGENDA DE CITAS DEL MÉDICO --------------------
 
 async function cargarAgendaMedico(contenido) {
   contenido.innerHTML = `
     <h3>Agenda de citas</h3>
-    <p class="texto-suave">
-      Cargando agenda de citas del médico...
-    </p>
+    <p class="texto-suave">Cargando agenda de citas del médico...</p>
   `;
 
   if (!medicoActual || !medicoActual.id_medico) {
@@ -375,64 +217,82 @@ async function cargarAgendaMedico(contenido) {
 
   try {
     const res = await fetch(`${BACKEND_URL}/api/medicos/${idMedico}/citas`);
-    const data = await res.json().catch(() => []);
+    const data = await res.json();
 
     if (!res.ok) {
-      throw new Error(
-        data.error || "No se pudo obtener la agenda de citas del médico."
-      );
+      throw new Error(data.error || "No se pudo obtener la agenda.");
     }
 
-    if (!Array.isArray(data) || data.length === 0) {
-      contenido.innerHTML = `
-        <h3>Agenda de citas</h3>
-        <p class="texto-suave">
-          No hay citas registradas para este médico.
-        </p>
-      `;
-      return;
-    }
-
-    const ahora = new Date();
-    const citasFuturas = [];
-    const historialCitas = [];
-
-    for (const c of data) {
-      if (!c.fecha_hora) {
-        historialCitas.push(c);
-        continue;
-      }
-      const fecha = new Date(c.fecha_hora);
-      if (c.estado_cita === "programada" && fecha >= ahora) {
-        citasFuturas.push(c);
-      } else {
-        historialCitas.push(c);
-      }
-    }
+    // El backend YA devuelve esto:
+    const { futuras = [], historial = [] } = data;
 
     let html = `
       <h3>Agenda de citas</h3>
       <p class="texto-suave">
-        Citas asociadas al médico ${medicoActual.nombre} ${
+        Citas asociadas al médico <strong>${medicoActual.nombre} ${
       medicoActual.apellido_paterno || ""
-    }.
+    }</strong>.
       </p>
     `;
 
-    if (citasFuturas.length === 0 && historialCitas.length === 0) {
+    // =======================
+    // PRÓXIMAS CITAS
+    // =======================
+    html += `<h4>Próximas citas</h4>`;
+
+    if (futuras.length === 0) {
+      html += `<p class="texto-suave">No hay citas próximas registradas.</p>`;
+    } else {
       html += `
-        <p class="texto-suave">
-          No hay citas registradas para este médico.
-        </p>
+        <table class="tabla-lista">
+          <thead>
+            <tr>
+              <th>Fecha y hora</th>
+              <th>Paciente</th>
+              <th>Motivo</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
       `;
-      contenido.innerHTML = html;
-      return;
+
+      for (const c of futuras) {
+        const nombre = `${c.nombre} ${c.apellido_paterno || ""} ${
+          c.apellido_materno || ""
+        }`.trim();
+        const fechaHora = formatDateTimeDisplay(c.fecha_hora) || "-";
+
+        html += `
+          <tr>
+            <td>${fechaHora}</td>
+            <td>${nombre}</td>
+            <td>${c.motivo || "-"}</td>
+            <td>${c.estado_cita || "-"}</td>
+            <td>
+              <button class="btn-accion" data-id="${c.id_cita}" data-estado="atendida">
+                Atendida
+              </button>
+              <button class="btn-accion" data-id="${c.id_cita}" data-estado="no asistió">
+                No asistió
+              </button>
+            </td>
+          </tr>
+        `;
+      }
+
+      html += `</tbody></table>`;
     }
 
-    // Próximas citas
-    if (citasFuturas.length > 0) {
+    // =======================
+    // HISTORIAL DE CITAS
+    // =======================
+    html += `<hr/><h4>Historial de citas</h4>`;
+
+    if (historial.length === 0) {
+      html += `<p class="texto-suave">No hay citas anteriores registradas.</p>`;
+    } else {
       html += `
-        <h4>Próximas citas</h4>
         <table class="tabla-lista">
           <thead>
             <tr>
@@ -445,75 +305,58 @@ async function cargarAgendaMedico(contenido) {
           <tbody>
       `;
 
-      for (const c of citasFuturas) {
-        const nombrePaciente = `${c.nombre} ${c.apellido_paterno || ""} ${
-          c.apellido_materno || ""
+      for (const h of historial) {
+        const nombre = `${h.nombre} ${h.apellido_paterno || ""} ${
+          h.apellido_materno || ""
         }`.trim();
-
-        let fechaHora = "-";
-        if (c.fecha_hora) {
-          fechaHora = c.fecha_hora.toString().replace("T", " ").slice(0, 16);
-        }
+        const fechaHora = formatDateTimeDisplay(h.fecha_hora) || "-";
 
         html += `
           <tr>
             <td>${fechaHora}</td>
-            <td>${nombrePaciente}</td>
-            <td>${c.motivo || "-"}</td>
-            <td>${c.estado_cita || "-"}</td>
+            <td>${nombre}</td>
+            <td>${h.motivo || "-"}</td>
+            <td>${h.estado_cita || "-"}</td>
           </tr>
         `;
       }
 
-      html += `
-          </tbody>
-        </table>
-      `;
-    }
-
-    // Historial de citas
-    if (historialCitas.length > 0) {
-      html += `
-        <h4 style="margin-top:1rem;">Historial de citas</h4>
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha y hora</th>
-              <th>Paciente</th>
-              <th>Motivo</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const c of historialCitas) {
-        const nombrePaciente = `${c.nombre} ${c.apellido_paterno || ""} ${
-          c.apellido_materno || ""
-        }`.trim();
-
-        let fechaHora = "-";
-        if (c.fecha_hora) {
-          fechaHora = c.fecha_hora.toString().replace("T", " ").slice(0, 16);
-        }
-
-        html += `
-          <tr>
-            <td>${fechaHora}</td>
-            <td>${nombrePaciente}</td>
-            <td>${c.motivo || "-"}</td>
-            <td>${c.estado_cita || "-"}</td>
-          </tr>
-        `;
-      }
-
-      html += `
-          </tbody>
-        </table>
-      `;
+      html += `</tbody></table>`;
     }
 
     contenido.innerHTML = html;
+
+    // =======================
+    // EVENTOS DE ACCIÓN
+    // =======================
+    contenido.querySelectorAll("button[data-estado]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-id");
+        const nuevoEstado = btn.getAttribute("data-estado");
+
+        const confirmar = confirm(`¿Marcar cita como "${nuevoEstado}"?`);
+        if (!confirmar) return;
+
+        try {
+          const res = await fetch(`${BACKEND_URL}/api/citas/${id}/estado`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nuevo_estado: nuevoEstado }),
+          });
+
+          const body = await res.json();
+          if (!res.ok) {
+            throw new Error(body.error || "Error al actualizar el estado.");
+          }
+
+          alert("Estado de la cita actualizado correctamente.");
+          cargarAgendaMedico(contenido); // recarga y re-clasifica
+        } catch (err) {
+          console.error(err);
+          alert(err.message);
+        }
+      });
+    });
   } catch (err) {
     console.error(err);
     contenido.innerHTML = `
@@ -524,12 +367,18 @@ async function cargarAgendaMedico(contenido) {
     `;
   }
 }
+
+
+
+// -------------------- PACIENTES DEL MEDICO --------------------
 async function cargarPacientesMedico(contenido) {
+  // Mensaje inicial
   contenido.innerHTML = `
     <h3>Pacientes asignados</h3>
     <p class="texto-suave">Cargando pacientes...</p>
   `;
 
+  // Validar que tengamos médico logueado
   if (!medicoActual || !medicoActual.id_medico) {
     contenido.innerHTML = `
       <h3>Pacientes asignados</h3>
@@ -541,7 +390,9 @@ async function cargarPacientesMedico(contenido) {
   }
 
   try {
-    const res = await fetch(`${BACKEND_URL}/api/medicos/${medicoActual.id_medico}/pacientes`);
+    const res = await fetch(
+      `${BACKEND_URL}/api/medicos/${medicoActual.id_medico}/pacientes`
+    );
     const data = await res.json().catch(() => []);
 
     if (!res.ok) {
@@ -556,6 +407,7 @@ async function cargarPacientesMedico(contenido) {
       return;
     }
 
+    // Armar tabla
     let html = `
       <h3>Pacientes asignados</h3>
       <table class="tabla-lista">
@@ -573,8 +425,12 @@ async function cargarPacientesMedico(contenido) {
     `;
 
     for (const p of data) {
-      const nombre = `${p.nombre} ${p.apellido_paterno || ''} ${p.apellido_materno || ''}`.trim();
-      const fechaNac = p.fecha_nacimiento ? p.fecha_nacimiento.slice(0, 10) : '-';
+      const nombre = `${p.nombre} ${p.apellido_paterno || ''} ${
+        p.apellido_materno || ''
+      }`.trim();
+      const fechaNac = p.fecha_nacimiento
+        ? p.fecha_nacimiento.slice(0, 10)
+        : '-';
 
       html += `
         <tr>
@@ -584,7 +440,9 @@ async function cargarPacientesMedico(contenido) {
           <td>${p.sexo || '-'}</td>
           <td>${p.estatus_afiliacion || '-'}</td>
           <td>
-            <button class="btn-accion" data-idpac="${p.id_paciente}">
+            <button class="btn-accion btn-ver-expediente" data-idpac="${
+              p.id_paciente
+            }">
               Ver expediente
             </button>
           </td>
@@ -597,24 +455,24 @@ async function cargarPacientesMedico(contenido) {
       </table>
     `;
 
+    // Pintar tabla
     contenido.innerHTML = html;
 
-    // listeners de botones
-    contenido.querySelectorAll('button.btn-accion').forEach((btn) => {
+    // ➜ Listener de "Ver expediente"
+    contenido.querySelectorAll('button.btn-ver-expediente').forEach((btn) => {
       btn.addEventListener('click', () => {
         const idPaciente = btn.getAttribute('data-idpac');
         cargarExpedientePaciente(contenido, idPaciente);
       });
     });
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error(error);
     contenido.innerHTML = `
       <h3>Pacientes asignados</h3>
-      <p class="texto-suave" style="color:#b91c1c;">${err.message}</p>
+      <p class="texto-suave" style="color:#b91c1c;">${error.message}</p>
     `;
   }
 }
-
 
 // Muestra expediente + pestañas (notas, recetas, órdenes)
 async function cargarExpedientePaciente(contenido, idPaciente) {
@@ -696,13 +554,14 @@ async function cargarExpedientePaciente(contenido, idPaciente) {
 
     contenido.innerHTML = html;
 
+    // contenedor donde pintan tus funciones cargarNotasEvolucion / etc
     const contExp = contenido.querySelector('#contenido-expediente');
 
-    const cargarNotas = () =>
+    const cargarNotasTab = () =>
       cargarNotasEvolucion(contExp, expediente.id_expediente);
-    const cargarRecetas = () =>
+    const cargarRecetasTab = () =>
       cargarRecetasExpediente(contExp, expediente.id_expediente);
-    const cargarOrdenes = () =>
+    const cargarOrdenesTab = () =>
       cargarOrdenesExpediente(contExp, expediente.id_expediente);
 
     // listeners de pestañas
@@ -714,14 +573,14 @@ async function cargarExpedientePaciente(contenido, idPaciente) {
         btn.classList.add('active');
 
         const tab = btn.getAttribute('data-tab');
-        if (tab === 'notas') cargarNotas();
-        if (tab === 'recetas') cargarRecetas();
-        if (tab === 'ordenes') cargarOrdenes();
+        if (tab === 'notas') cargarNotasTab();
+        if (tab === 'recetas') cargarRecetasTab();
+        if (tab === 'ordenes') cargarOrdenesTab();
       });
     });
 
     // cargar pestaña inicial
-    cargarNotas();
+    cargarNotasTab();
   } catch (err) {
     console.error(err);
     contenido.innerHTML = `
@@ -730,6 +589,7 @@ async function cargarExpedientePaciente(contenido, idPaciente) {
     `;
   }
 }
+
 
 
 async function cargarNotasEvolucion(contenedor, idExpediente) {
@@ -748,7 +608,8 @@ async function cargarNotasEvolucion(contenedor, idExpediente) {
     let html = `
       <h4>Notas de evolución</h4>
       <div class="bloque-form">
-        <textarea id="txtNotaEvolucion" rows="3" placeholder="Escribe la nueva nota clínica..."></textarea>
+        <textarea id="txtNotaEvolucion" rows="3"
+          placeholder="Escribe la nueva nota clínica..."></textarea>
         <button id="btnGuardarNota" class="btn-primario">Guardar nota</button>
       </div>
     `;
@@ -769,8 +630,9 @@ async function cargarNotasEvolucion(contenedor, idExpediente) {
       `;
       for (const n of notas) {
         const fecha = n.fecha_hora
-          ? n.fecha_hora.toString().replace('T', ' ').slice(0, 16)
-          : '-';
+  ? formatDateTimeDisplay(n.fecha_hora) || '-'
+  : '-';
+
         html += `
           <tr>
             <td>${fecha}</td>
@@ -784,6 +646,7 @@ async function cargarNotasEvolucion(contenedor, idExpediente) {
 
     contenedor.innerHTML = html;
 
+    // Guardar nueva nota
     contenedor.querySelector('#btnGuardarNota').addEventListener('click', async () => {
       const texto = contenedor.querySelector('#txtNotaEvolucion').value.trim();
       if (!texto) {
@@ -805,10 +668,8 @@ async function cargarNotasEvolucion(contenedor, idExpediente) {
           }
         );
         const body = await resIns.json().catch(() => ({}));
-        if (!resIns.ok) {
-          throw new Error(body.error || 'No se pudo guardar la nota.');
-        }
-        cargarNotasEvolucion(contenedor, idExpediente);
+        if (!resIns.ok) throw new Error(body.error || 'No se pudo guardar la nota.');
+        cargarNotasEvolucion(contenedor, idExpediente); // recargar lista
       } catch (err) {
         console.error(err);
         alert(err.message);
@@ -821,6 +682,8 @@ async function cargarNotasEvolucion(contenedor, idExpediente) {
     `;
   }
 }
+
+
 async function cargarRecetasExpediente(contenedor, idExpediente) {
   contenedor.innerHTML = `<p class="texto-suave">Cargando recetas médicas...</p>`;
 
@@ -840,19 +703,16 @@ async function cargarRecetasExpediente(contenedor, idExpediente) {
         <input
           type="text"
           id="txtDescripcionReceta"
-          placeholder="Descripción general de la receta (opcional)"
+          placeholder="Descripción breve de la receta (opcional)"
         />
-        <textarea
-          id="txtMedicamentos"
-          rows="3"
-          placeholder="Medicamentos (ej. Paracetamol 500mg VO c/8h por 5 días)"
-        ></textarea>
-        <textarea
-          id="txtIndicaciones"
-          rows="2"
-          placeholder="Indicaciones adicionales para el paciente (opcional)"
-        ></textarea>
-        <button id="btnGuardarReceta" class="btn-primario">Guardar receta</button>
+        <input
+          type="file"
+          id="fileReceta"
+          accept=".pdf,.doc,.docx,.docm,.jpg,.jpeg,.png"
+        />
+        <button id="btnSubirReceta" class="btn-primario">
+          Guardar receta
+        </button>
       </div>
     `;
 
@@ -865,69 +725,127 @@ async function cargarRecetasExpediente(contenedor, idExpediente) {
             <tr>
               <th>Fecha</th>
               <th>Descripción</th>
-              <th>Medicamentos</th>
+              <th>Archivo</th>
             </tr>
           </thead>
           <tbody>
       `;
+
       for (const r of recetas) {
         const fecha = r.fecha_receta
-          ? r.fecha_receta.toString().replace('T', ' ').slice(0, 16)
+          ? new Date(r.fecha_receta).toLocaleString('es-MX', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
           : '-';
+
+        const descripcion = r.descripcion || '-';
+
+        let colArchivo = 'Sin archivo';
+        if (r.archivo_ruta) {
+          const nombre = r.archivo_nombre_original || 'Ver archivo';
+          colArchivo = `
+            <button
+              class="btn-accion btn-ver-receta"
+              data-archivo="${r.archivo_ruta}"
+            >
+              ${nombre}
+            </button>
+          `;
+        }
+
         html += `
           <tr>
             <td>${fecha}</td>
-            <td>${r.descripcion || '-'}</td>
-            <td>${r.medicamentos}</td>
+            <td>${descripcion}</td>
+            <td>${colArchivo}</td>
           </tr>
         `;
       }
+
       html += `</tbody></table>`;
     }
 
     contenedor.innerHTML = html;
 
-    contenedor.querySelector('#btnGuardarReceta').addEventListener('click', async () => {
-      const descr = contenedor.querySelector('#txtDescripcionReceta').value.trim();
-      const meds = contenedor.querySelector('#txtMedicamentos').value.trim();
-      const indic = contenedor.querySelector('#txtIndicaciones').value.trim();
+    // ---- Guardar nueva receta (archivo + descripción) ----
+    const btnSubir = contenedor.querySelector('#btnSubirReceta');
+    if (btnSubir) {
+      btnSubir.addEventListener('click', async () => {
+        const inputDesc = contenedor.querySelector('#txtDescripcionReceta');
+        const inputFile = contenedor.querySelector('#fileReceta');
 
-      if (!meds) {
-        alert('Debes capturar los medicamentos.');
-        return;
-      }
+        const descripcion = (inputDesc?.value || '').trim();
+        const archivo = inputFile?.files[0];
 
-      try {
-        const resIns = await fetch(
-          `${BACKEND_URL}/api/expedientes/${idExpediente}/recetas`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              id_medico: medicoActual.id_medico,
-              descripcion: descr,
-              medicamentos: meds,
-              indicaciones: indic,
-            }),
-          }
-        );
-        const body = await resIns.json().catch(() => ({}));
-        if (!resIns.ok) {
-          throw new Error(body.error || 'No se pudo guardar la receta.');
+        if (!archivo) {
+          alert('Selecciona un archivo de receta (PDF, Word, imagen, etc.).');
+          return;
         }
-        cargarRecetasExpediente(contenedor, idExpediente);
-      } catch (err) {
-        console.error(err);
-        alert(err.message);
-      }
-    });
+
+        const formData = new FormData();
+        formData.append('id_medico', medicoActual.id_medico);
+        formData.append('descripcion', descripcion);
+        formData.append('archivo', archivo);
+
+        try {
+          const resUp = await fetch(
+            `${BACKEND_URL}/api/expedientes/${idExpediente}/recetas/archivo`,
+            {
+              method: 'POST',
+              body: formData,
+            }
+          );
+
+          const body = await resUp.json().catch(() => ({}));
+          if (!resUp.ok) {
+            throw new Error(body.error || 'No se pudo guardar la receta.');
+          }
+
+          // Limpiar formulario y recargar lista
+          if (inputDesc) inputDesc.value = '';
+          if (inputFile) inputFile.value = '';
+
+          await cargarRecetasExpediente(contenedor, idExpediente);
+          alert('Receta registrada correctamente.');
+        } catch (err) {
+          console.error(err);
+          alert(err.message);
+        }
+      });
+    }
+
+    // ---- Ver archivo de receta ----
+    contenedor
+      .querySelectorAll('button.btn-ver-receta')
+      .forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const rutaRelativa = btn.getAttribute('data-archivo'); // <-- AQUÍ viene la ruta
+          if (!rutaRelativa) {
+            alert('No se encontró la ruta del archivo.');
+            return;
+          }
+          // Mandamos la ruta al proceso principal
+          window.electronAPI.verArchivoReceta(rutaRelativa);
+        });
+      });
   } catch (err) {
     console.error(err);
     contenedor.innerHTML = `
-      <p class="texto-suave" style="color:#b91c1c;">${err.message}</p>
+      <p class="texto-suave" style="color:#b91c1c;">
+        ${err.message}
+      </p>
     `;
   }
 }
+
+
+
+
+
 async function cargarOrdenesExpediente(contenedor, idExpediente) {
   contenedor.innerHTML = `<p class="texto-suave">Cargando órdenes de laboratorio...</p>`;
 
@@ -946,11 +864,8 @@ async function cargarOrdenesExpediente(contenedor, idExpediente) {
     let html = `
       <h4>Órdenes de laboratorio</h4>
       <div class="bloque-form">
-        <textarea
-          id="txtObsOrden"
-          rows="3"
-          placeholder="Estudios solicitados y observaciones (ej. BH, QS, EGO)..."
-        ></textarea>
+        <textarea id="txtObsOrden" rows="3"
+          placeholder="Estudios solicitados y observaciones (ej. BH, QS, EGO)..."></textarea>
         <button id="btnGuardarOrden" class="btn-primario">Registrar orden</button>
       </div>
     `;
@@ -971,8 +886,9 @@ async function cargarOrdenesExpediente(contenedor, idExpediente) {
       `;
       for (const o of ordenes) {
         const fecha = o.fecha_solicitud
-          ? o.fecha_solicitud.toString().replace('T', ' ').slice(0, 16)
-          : '-';
+  ? formatDateTimeDisplay(o.fecha_solicitud) || '-'
+  : '-';
+
         html += `
           <tr>
             <td>${fecha}</td>
@@ -988,11 +904,6 @@ async function cargarOrdenesExpediente(contenedor, idExpediente) {
 
     contenedor.querySelector('#btnGuardarOrden').addEventListener('click', async () => {
       const obs = contenedor.querySelector('#txtObsOrden').value.trim();
-      if (!obs) {
-        if (!confirm('No escribiste observaciones. ¿Registrar de todos modos?')) {
-          return;
-        }
-      }
 
       try {
         const resIns = await fetch(
@@ -1002,14 +913,12 @@ async function cargarOrdenesExpediente(contenedor, idExpediente) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               id_medico: medicoActual.id_medico,
-              observaciones: obs,
+              observaciones: obs || null,
             }),
           }
         );
         const body = await resIns.json().catch(() => ({}));
-        if (!resIns.ok) {
-          throw new Error(body.error || 'No se pudo registrar la orden.');
-        }
+        if (!resIns.ok) throw new Error(body.error || 'No se pudo registrar la orden.');
         cargarOrdenesExpediente(contenedor, idExpediente);
       } catch (err) {
         console.error(err);
@@ -1023,4 +932,5 @@ async function cargarOrdenesExpediente(contenedor, idExpediente) {
     `;
   }
 }
+
 

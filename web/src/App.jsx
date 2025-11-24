@@ -304,6 +304,44 @@ function App() {
   };
 
   // -------- Solicitar nueva cita --------
+  // Valida que la fecha/hora de la cita cumpla las reglas del sistema
+function validarFechaHoraCita(fechaHoraStr) {
+  if (!fechaHoraStr) return "Debes seleccionar fecha y hora.";
+
+  const d = new Date(fechaHoraStr);
+  if (Number.isNaN(d.getTime())) {
+    return "La fecha y hora no son válidas.";
+  }
+
+  // Debe ser en el futuro
+  const ahora = new Date();
+  if (d <= ahora) {
+    return "La cita debe ser en una fecha y hora futura.";
+  }
+
+  // Solo lunes a viernes (0 = domingo, 6 = sábado)
+  const dia = d.getDay();
+  if (dia === 0 || dia === 6) {
+    return "Solo se permiten citas de lunes a viernes.";
+  }
+
+  const hora = d.getHours();
+  const minutos = d.getMinutes();
+
+  // ✅ permitir 08:00 a 16:00 EXACTO
+  if (hora < 8 || hora > 16 || (hora === 16 && minutos > 0)) {
+    return "Solo se permiten citas de 08:00 a 16:00 hrs.";
+  }
+
+  // Solo horas exactas
+  if (minutos !== 0) {
+    return "Las citas solo pueden agendarse en horas exactas (ej. 8:00, 9:00, 15:00).";
+  }
+
+  return null;
+}
+
+
 
   const handleNuevaCitaChange = (e) => {
     const { name, value } = e.target;
@@ -311,47 +349,48 @@ function App() {
   };
 
   const handleCrearCita = async (e) => {
-    e.preventDefault();
-    if (!paciente) return;
+  e.preventDefault();
+  if (!paciente) return;
 
-    if (!nuevaCita.fecha_hora || !nuevaCita.motivo) {
-      setErrorNuevaCita("Debes capturar fecha/hora y motivo de la cita.");
-      return;
-    }
+  if (!nuevaCita.fecha_hora || !nuevaCita.motivo) {
+    alert("Debes capturar fecha/hora y motivo de la cita.");
+    return;
+  }
 
-    const validacion = validarFechaHoraCita(nuevaCita.fecha_hora);
-    if (!validacion.ok) {
-      setErrorNuevaCita(validacion.mensaje);
-      return;
-    }
-    setErrorNuevaCita("");
+  // 🔎 Validación de reglas de horario
+  const errorValidacion = validarFechaHoraCita(nuevaCita.fecha_hora);
+  if (errorValidacion) {
+    alert(errorValidacion);
+    return;
+  }
 
-    setGuardandoCita(true);
-    try {
-      const res = await fetch(
-        `http://localhost:3000/api/pacientes/${paciente.id_paciente}/citas`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(nuevaCita),
-        }
-      );
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Error al crear la cita.");
+  setGuardandoCita(true);
+  try {
+    const res = await fetch(
+      `http://localhost:3000/api/pacientes/${paciente.id_paciente}/citas`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nuevaCita),
       }
+    );
 
-      await res.json(); // no lo usamos, pero por si acaso
-      setNuevaCita({ fecha_hora: "", motivo: "" });
-      await cargarCitas();
-    } catch (err) {
-      console.error(err);
-      alert(err.message);
-    } finally {
-      setGuardandoCita(false);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || "Error al crear la cita.");
     }
-  };
+
+    await res.json(); // por si el backend manda algo
+    setNuevaCita({ fecha_hora: "", motivo: "" });
+    await cargarCitas();
+  } catch (err) {
+    console.error(err);
+    alert(err.message);
+  } finally {
+    setGuardandoCita(false);
+  }
+};
+
 
   // -------- Cancelar cita --------
 
@@ -435,7 +474,6 @@ function App() {
       alert(err.message);
     }
   };
-
   // -------- RENDER --------
 
   return (
