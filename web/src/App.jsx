@@ -1,5 +1,28 @@
+// App.jsx - Portal web de pacientes Hospital ADS
+// ---------------------------------------------
+// Organización de este archivo:
+//
+//  1) Imports y constantes generales
+//  2) Utilidades de fecha/hora y citas
+//  3) Componente principal <App />
+//     3.1) Estados (auth, portal, citas, recetas, resultados)
+//     3.2) Efectos de carga inicial (estado backend, datos del portal)
+//     3.3) Handlers de login/registro/logout
+//     3.4) Carga de datos (citas, recetas, resultados)
+//     3.5) Handlers de citas (crear, cancelar, reagendar)
+//     3.6) Render de la UI (login/registro + portal)
+//
+// ---------------------------------------------
+
+
 import { useEffect, useState } from "react";
 import "./App.css";
+
+const BACKEND_URL = "http://localhost:3000";
+
+// ---------------------------------------------
+// 2) UTILIDADES DE FECHA/HORA Y CITAS
+// ---------------------------------------------
 
 // Convierte lo que viene del backend a valor para <input type="datetime-local">
 function toLocalInputDateTime(value) {
@@ -18,7 +41,7 @@ function formatDateTimeDisplay(value) {
   return input.replace("T", " ");
 }
 
-// 🔹 NUEVO: separa citas futuras e historial
+// Separa citas futuras e historial según fecha/estado
 function separarCitasPorTiempo(citas) {
   const ahora = new Date();
   const futuras = [];
@@ -32,7 +55,7 @@ function separarCitasPorTiempo(citas) {
 
     const fecha = new Date(c.fecha_hora);
 
-    // cita futura = programada y con fecha >= ahora
+    // Cita futura = programada y con fecha >= ahora
     if (c.estado_cita === "programada" && fecha >= ahora) {
       futuras.push(c);
     } else {
@@ -43,15 +66,61 @@ function separarCitasPorTiempo(citas) {
   return { futuras, historial };
 }
 
+// Valida que la fecha/hora de la cita cumpla las reglas del sistema (lado cliente)
+function validarFechaHoraCita(fechaHoraStr) {
+  if (!fechaHoraStr) return "Debes seleccionar fecha y hora.";
+
+  const d = new Date(fechaHoraStr);
+  if (Number.isNaN(d.getTime())) {
+    return "La fecha y hora no son válidas.";
+  }
+
+  // Debe ser en el futuro
+  const ahora = new Date();
+  if (d <= ahora) {
+    return "La cita debe ser en una fecha y hora futura.";
+  }
+
+  // Solo lunes a viernes (0 = domingo, 6 = sábado)
+  const dia = d.getDay();
+  if (dia === 0 || dia === 6) {
+    return "Solo se permiten citas de lunes a viernes.";
+  }
+
+  const hora = d.getHours();
+  const minutos = d.getMinutes();
+
+  // Horario permitido 08:00 a 16:00 (horas exactas)
+  if (hora < 8 || hora > 16 || (hora === 16 && minutos > 0)) {
+    return "Solo se permiten citas de 08:00 a 16:00 hrs.";
+  }
+
+  // Solo horas exactas
+  if (minutos !== 0) {
+    return "Las citas solo pueden agendarse en horas exactas (ej. 8:00, 9:00, 15:00).";
+  }
+
+  return null;
+}
+
+// ---------------------------------------------
+// 3) COMPONENTE PRINCIPAL <App />
+// ---------------------------------------------
 
 function App() {
+  // -------- 3.1) ESTADOS GENERALES --------
+
+  // Estado del backend
   const [estado, setEstado] = useState(null);
   const [errorEstado, setErrorEstado] = useState(null);
 
-  const [paciente, setPaciente] = useState(null); // paciente logueado
+  // Paciente autenticado
+  const [paciente, setPaciente] = useState(null);
 
+  // Modo de autenticación: login o registro
   const [modoAuth, setModoAuth] = useState("login"); // "login" | "registro"
 
+  // Login
   const [loginData, setLoginData] = useState({
     correo: "",
     contrasena: "",
@@ -59,6 +128,7 @@ function App() {
   const [loginError, setLoginError] = useState(null);
   const [loginCargando, setLoginCargando] = useState(false);
 
+  // Registro
   const [registroData, setRegistroData] = useState({
     nombre: "",
     apellido_paterno: "",
@@ -69,7 +139,7 @@ function App() {
     fecha_nacimiento: "",
     curp: "",
     direccion: "",
-    sexo: "", // nuevo campo
+    sexo: "",
   });
   const [registroError, setRegistroError] = useState(null);
   const [registroMensaje, setRegistroMensaje] = useState(null);
@@ -89,7 +159,6 @@ function App() {
     motivo: "",
   });
   const [guardandoCita, setGuardandoCita] = useState(false);
-  const [errorNuevaCita, setErrorNuevaCita] = useState("");
 
   const [reagendandoId, setReagendandoId] = useState(null);
   const [nuevaFechaReagendar, setNuevaFechaReagendar] = useState("");
@@ -103,15 +172,17 @@ function App() {
   const [resultados, setResultados] = useState([]);
   const [resultadosCargando, setResultadosCargando] = useState(false);
   const [resultadosError, setResultadosError] = useState(null);
+
+  // Derivados de citas: futuras e historial
   const { futuras: citasFuturas, historial: historialCitas } =
     separarCitasPorTiempo(citas);
 
+  // -------- 3.2) EFECTO: ESTADO DEL BACKEND --------
 
-  // -------- ESTADO DEL BACKEND --------
   useEffect(() => {
     const cargarEstado = async () => {
       try {
-        const res = await fetch("http://localhost:3000/api/estado");
+        const res = await fetch(`${BACKEND_URL}/api/estado`);
         if (!res.ok) throw new Error("Error al consultar el backend");
         const data = await res.json();
         setEstado(data);
@@ -124,7 +195,7 @@ function App() {
     cargarEstado();
   }, []);
 
-  // -------- LOGIN --------
+  // -------- 3.3) HANDLERS LOGIN / REGISTRO / LOGOUT --------
 
   const handleChangeLogin = (e) => {
     const { name, value } = e.target;
@@ -143,7 +214,7 @@ function App() {
     }
 
     try {
-      const res = await fetch("http://localhost:3000/api/pacientes/login", {
+      const res = await fetch(`${BACKEND_URL}/api/pacientes/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(loginData),
@@ -164,8 +235,6 @@ function App() {
       setLoginCargando(false);
     }
   };
-
-  // -------- REGISTRO --------
 
   const handleChangeRegistro = (e) => {
     const { name, value } = e.target;
@@ -192,7 +261,7 @@ function App() {
     }
 
     try {
-      const res = await fetch("http://localhost:3000/api/pacientes", {
+      const res = await fetch(`${BACKEND_URL}/api/pacientes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(registroData),
@@ -234,14 +303,14 @@ function App() {
     setResultados([]);
   };
 
-  // -------- CARGA DE DATOS DEL PORTAL (citas, recetas, resultados) --------
+  // -------- 3.4) EFECTO: CARGA DE DATOS DEL PORTAL --------
 
   useEffect(() => {
     if (!paciente) return;
-
     cargarCitas();
     cargarRecetas();
     cargarResultados();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paciente]);
 
   const cargarCitas = async () => {
@@ -251,7 +320,7 @@ function App() {
 
     try {
       const res = await fetch(
-        `http://localhost:3000/api/pacientes/${paciente.id_paciente}/citas`
+        `${BACKEND_URL}/api/pacientes/${paciente.id_paciente}/citas`
       );
       if (!res.ok) throw new Error("Error al consultar citas");
       const data = await res.json();
@@ -269,9 +338,10 @@ function App() {
     if (!paciente) return;
     setRecetasCargando(true);
     setRecetasError(null);
+
     try {
       const res = await fetch(
-        `http://localhost:3000/api/pacientes/${paciente.id_paciente}/recetas`
+        `${BACKEND_URL}/api/pacientes/${paciente.id_paciente}/recetas`
       );
       if (!res.ok) throw new Error("Error al consultar recetas");
       const data = await res.json();
@@ -288,9 +358,10 @@ function App() {
     if (!paciente) return;
     setResultadosCargando(true);
     setResultadosError(null);
+
     try {
       const res = await fetch(
-        `http://localhost:3000/api/pacientes/${paciente.id_paciente}/resultados-laboratorio`
+        `${BACKEND_URL}/api/pacientes/${paciente.id_paciente}/resultados-laboratorio`
       );
       if (!res.ok) throw new Error("Error al consultar resultados");
       const data = await res.json();
@@ -303,45 +374,7 @@ function App() {
     }
   };
 
-  // -------- Solicitar nueva cita --------
-  // Valida que la fecha/hora de la cita cumpla las reglas del sistema
-function validarFechaHoraCita(fechaHoraStr) {
-  if (!fechaHoraStr) return "Debes seleccionar fecha y hora.";
-
-  const d = new Date(fechaHoraStr);
-  if (Number.isNaN(d.getTime())) {
-    return "La fecha y hora no son válidas.";
-  }
-
-  // Debe ser en el futuro
-  const ahora = new Date();
-  if (d <= ahora) {
-    return "La cita debe ser en una fecha y hora futura.";
-  }
-
-  // Solo lunes a viernes (0 = domingo, 6 = sábado)
-  const dia = d.getDay();
-  if (dia === 0 || dia === 6) {
-    return "Solo se permiten citas de lunes a viernes.";
-  }
-
-  const hora = d.getHours();
-  const minutos = d.getMinutes();
-
-  // ✅ permitir 08:00 a 16:00 EXACTO
-  if (hora < 8 || hora > 16 || (hora === 16 && minutos > 0)) {
-    return "Solo se permiten citas de 08:00 a 16:00 hrs.";
-  }
-
-  // Solo horas exactas
-  if (minutos !== 0) {
-    return "Las citas solo pueden agendarse en horas exactas (ej. 8:00, 9:00, 15:00).";
-  }
-
-  return null;
-}
-
-
+  // -------- 3.5) HANDLERS DE CITAS (NUEVA, CANCELAR, REAGENDAR) --------
 
   const handleNuevaCitaChange = (e) => {
     const { name, value } = e.target;
@@ -349,50 +382,47 @@ function validarFechaHoraCita(fechaHoraStr) {
   };
 
   const handleCrearCita = async (e) => {
-  e.preventDefault();
-  if (!paciente) return;
+    e.preventDefault();
+    if (!paciente) return;
 
-  if (!nuevaCita.fecha_hora || !nuevaCita.motivo) {
-    alert("Debes capturar fecha/hora y motivo de la cita.");
-    return;
-  }
-
-  // 🔎 Validación de reglas de horario
-  const errorValidacion = validarFechaHoraCita(nuevaCita.fecha_hora);
-  if (errorValidacion) {
-    alert(errorValidacion);
-    return;
-  }
-
-  setGuardandoCita(true);
-  try {
-    const res = await fetch(
-      `http://localhost:3000/api/pacientes/${paciente.id_paciente}/citas`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(nuevaCita),
-      }
-    );
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || "Error al crear la cita.");
+    if (!nuevaCita.fecha_hora || !nuevaCita.motivo) {
+      alert("Debes capturar fecha/hora y motivo de la cita.");
+      return;
     }
 
-    await res.json(); // por si el backend manda algo
-    setNuevaCita({ fecha_hora: "", motivo: "" });
-    await cargarCitas();
-  } catch (err) {
-    console.error(err);
-    alert(err.message);
-  } finally {
-    setGuardandoCita(false);
-  }
-};
+    // Validación de reglas de horario (cliente)
+    const errorValidacion = validarFechaHoraCita(nuevaCita.fecha_hora);
+    if (errorValidacion) {
+      alert(errorValidacion);
+      return;
+    }
 
+    setGuardandoCita(true);
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/api/pacientes/${paciente.id_paciente}/citas`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nuevaCita),
+        }
+      );
 
-  // -------- Cancelar cita --------
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Error al crear la cita.");
+      }
+
+      await res.json(); // por si el backend manda algo
+      setNuevaCita({ fecha_hora: "", motivo: "" });
+      await cargarCitas();
+    } catch (err) {
+      console.error(err);
+      alert(err.message);
+    } finally {
+      setGuardandoCita(false);
+    }
+  };
 
   const handleCancelarCita = async (id_cita) => {
     if (!paciente) return;
@@ -402,7 +432,7 @@ function validarFechaHoraCita(fechaHoraStr) {
 
     try {
       const res = await fetch(
-        `http://localhost:3000/api/citas/${id_cita}/cancelar`,
+        `${BACKEND_URL}/api/citas/${id_cita}/cancelar`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -424,8 +454,6 @@ function validarFechaHoraCita(fechaHoraStr) {
     }
   };
 
-  // -------- Reagendar cita --------
-
   const iniciarReagendar = (cita) => {
     setReagendandoId(cita.id_cita);
     setNuevaFechaReagendar(toLocalInputDateTime(cita.fecha_hora));
@@ -444,14 +472,14 @@ function validarFechaHoraCita(fechaHoraStr) {
       return;
     }
 
-    const validacion = validarFechaHoraCita(nuevaFechaReagendar);
-    if (!validacion.ok) {
-      alert(validacion.mensaje);
+    const errorValidacion = validarFechaHoraCita(nuevaFechaReagendar);
+    if (errorValidacion) {
+      alert(errorValidacion);
       return;
     }
 
     try {
-      const res = await fetch(`http://localhost:3000/api/citas/${id_cita}`, {
+      const res = await fetch(`${BACKEND_URL}/api/citas/${id_cita}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -474,7 +502,8 @@ function validarFechaHoraCita(fechaHoraStr) {
       alert(err.message);
     }
   };
-  // -------- RENDER --------
+
+  // -------- 3.6) RENDER --------
 
   return (
     <div className="app-root">
@@ -816,7 +845,8 @@ function validarFechaHoraCita(fechaHoraStr) {
                 </button>
               </div>
 
-                            {portalTab === "citas" && (
+              {/* ----- TAB CITAS ----- */}
+              {portalTab === "citas" && (
                 <>
                   <p className="texto-suave">
                     Puedes ver tus próximas citas y el historial. Las
@@ -903,7 +933,9 @@ function validarFechaHoraCita(fechaHoraStr) {
                                             <button
                                               type="button"
                                               className="btn btn-link"
-                                              onClick={() => iniciarReagendar(c)}
+                                              onClick={() =>
+                                                iniciarReagendar(c)
+                                              }
                                             >
                                               Reagendar
                                             </button>
@@ -963,7 +995,6 @@ function validarFechaHoraCita(fechaHoraStr) {
                                   <td>{c.motivo}</td>
                                   <td>{c.estado_cita}</td>
                                   <td>
-                                    {/* En historial ya no se puede reagendar ni cancelar */}
                                     <span
                                       style={{
                                         fontSize: "0.75rem",
@@ -1010,9 +1041,6 @@ function validarFechaHoraCita(fechaHoraStr) {
                       Solo se permiten citas de lunes a viernes, de 08:00 a 16:00
                       hrs, en horas exactas.
                     </small>
-                    {errorNuevaCita && (
-                      <p className="text-error">{errorNuevaCita}</p>
-                    )}
 
                     <div className="form-field">
                       <label>Motivo de la consulta</label>
@@ -1036,16 +1064,20 @@ function validarFechaHoraCita(fechaHoraStr) {
                 </>
               )}
 
-
+              {/* ----- TAB RECETAS ----- */}
               {portalTab === "recetas" && (
                 <>
                   {recetasCargando && <p>Cargando recetas...</p>}
                   {recetasError && (
                     <p className="text-error">{recetasError}</p>
                   )}
-                  {!recetasCargando && !recetasError && recetas.length === 0 && (
-                    <p>No hay recetas médicas registradas.</p>
-                  )}
+
+                  {!recetasCargando &&
+                    !recetasError &&
+                    recetas.length === 0 && (
+                      <p>No hay recetas médicas registradas.</p>
+                    )}
+
                   {!recetasCargando && recetas.length > 0 && (
                     <div className="table-wrapper">
                       <table className="table">
@@ -1053,15 +1085,28 @@ function validarFechaHoraCita(fechaHoraStr) {
                           <tr>
                             <th>Fecha</th>
                             <th>Descripción</th>
-                            <th>Medicamentos</th>
+                            <th>Archivo</th>
                           </tr>
                         </thead>
                         <tbody>
                           {recetas.map((r) => (
                             <tr key={r.id_receta}>
                               <td>{formatDateTimeDisplay(r.fecha_receta)}</td>
-                              <td>{r.descripcion}</td>
-                              <td>{r.medicamentos}</td>
+                              <td>{r.descripcion || "-"}</td>
+                              <td>
+                                {r.archivo_ruta ? (
+                                  <a
+                                    href={`${BACKEND_URL}/${r.archivo_ruta}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {r.archivo_nombre_original ||
+                                      "Ver archivo"}
+                                  </a>
+                                ) : (
+                                  "Sin archivo"
+                                )}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -1071,39 +1116,61 @@ function validarFechaHoraCita(fechaHoraStr) {
                 </>
               )}
 
+              {/* ----- TAB RESULTADOS LABORATORIO ----- */}
               {portalTab === "resultados" && (
                 <>
                   {resultadosCargando && <p>Cargando resultados...</p>}
                   {resultadosError && (
                     <p className="text-error">{resultadosError}</p>
                   )}
+
                   {!resultadosCargando &&
                     !resultadosError &&
                     resultados.length === 0 && (
                       <p>No hay resultados de laboratorio registrados.</p>
                     )}
+
                   {!resultadosCargando && resultados.length > 0 && (
                     <div className="table-wrapper">
                       <table className="table">
                         <thead>
                           <tr>
                             <th>Fecha</th>
+                            <th>ID orden</th>
                             <th>Estudio</th>
-                            <th>Resultado</th>
-                            <th>Unidad</th>
-                            <th>Valores de referencia</th>
+                            <th>Archivo</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {resultados.map((r) => (
-                            <tr key={r.id_resultado}>
-                              <td>{formatDateTimeDisplay(r.fecha_resultado)}</td>
-                              <td>{r.nombre_estudio}</td>
-                              <td>{r.resultado}</td>
-                              <td>{r.unidad}</td>
-                              <td>{r.valores_referencia}</td>
-                            </tr>
-                          ))}
+                          {resultados.map((r) => {
+                            const urlArchivo = r.archivo_ruta
+                              ? `${BACKEND_URL}/${r.archivo_ruta}`
+                              : null;
+
+                            return (
+                              <tr key={r.id_resultado}>
+                                <td>
+                                  {formatDateTimeDisplay(r.fecha_resultado)}
+                                </td>
+                                <td>{r.id_orden || "-"}</td>
+                                <td>{r.nombre_estudio || "-"}</td>
+                                <td>
+                                  {urlArchivo ? (
+                                    <a
+                                      href={urlArchivo}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {r.archivo_nombre_original ||
+                                        "Ver archivo"}
+                                    </a>
+                                  ) : (
+                                    "Sin archivo"
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

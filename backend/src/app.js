@@ -1,3 +1,20 @@
+// app.js - Backend principal de Hospital-ADS
+// ------------------------------------------
+// Organización de este archivo:
+//
+//  1) Imports, configuración general y estáticos
+//  2) Configuración de uploads (recetas)
+//  3) Constantes y utilidades (validación de citas)
+//  4) Rutas de estado y login (usuarios internos y pacientes)
+//  5) Pacientes (alta, consulta, resumen de expediente, pacientes por médico)
+//  6) Citas (paciente y médico)
+//  7) Recetas médicas (paciente y expediente, con archivo)
+//  8) Órdenes y resultados de laboratorio (expediente + portal paciente)
+//  9) Notas de evolución (expediente clínico)
+//
+//  Al final: module.exports = app
+// ------------------------------------------
+
 const express = require('express');
 const cors = require('cors');
 const pool = require('./db');
@@ -10,143 +27,110 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ------------------------------------------
+// 1) ARCHIVOS ESTÁTICOS
+// ------------------------------------------
 
-// ---- carpeta de uploads para recetas ----
+// Archivos estáticos generales (si se necesitan)
+app.use('/files', express.static(path.join(__dirname, '..')));
+
+// Base de uploads
 const uploadsBase = path.join(__dirname, '..', 'uploads');
 const uploadsRecetas = path.join(uploadsBase, 'recetas');
 
-// crear carpetas si no existen
+// Crear carpetas si no existen
 fs.mkdirSync(uploadsRecetas, { recursive: true });
 
-// servir estáticos
+// Servir carpeta de uploads (recetas, etc.)
 app.use('/uploads', express.static(uploadsBase));
 
-// configuración de multer para recetas
+// ------------------------------------------
+// 2) CONFIGURACIÓN DE MULTER PARA RECETAS
+// ------------------------------------------
+
 const storageRecetas = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadsRecetas);
   },
   filename: (req, file, cb) => {
-  const ext = path.extname(file.originalname);
-  const fecha = new Date().toISOString().slice(0, 10); // 2025-11-23
-  const nombreLimpio = file.originalname
-    .replace(ext, "")
-    .replace(/[^a-zA-Z0-9_-]/g, "_"); // quita espacios y acentos
+    const ext = path.extname(file.originalname);
+    const fecha = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const nombreLimpio = file.originalname
+      .replace(ext, '')
+      .replace(/[^a-zA-Z0-9_-]/g, '_'); // quita espacios y acentos
 
-  const nombreUnico = `${nombreLimpio}_${fecha}${ext}`;
-  cb(null, nombreUnico);
-}
-
+    const nombreUnico = `${nombreLimpio}_${fecha}${ext}`;
+    cb(null, nombreUnico);
+  },
 });
 
 const uploadReceta = multer({ storage: storageRecetas });
 
+// ------------------------------------------
+// 3) CONSTANTES Y UTILIDADES
+// ------------------------------------------
+
 // Límite de anticipación para cancelar cita (horas) - RF-5
 const LIMITE_CANCELACION_HORAS = 24;
 
-// --- Reglas de horario de citas (backend) ---
+/**
+ * Valida fecha/hora de cita según reglas del backend.
+ * Reglas:
+ *  - Obligatoria
+ *  - Debe ser futura
+ *  - Solo lunes a viernes
+ *  - Horario 08:00 a 16:00
+ *  - Solo horas exactas (minutos = 0)
+ *
+ * @param {string} fechaHoraStr
+ * @returns {string|null} Mensaje de error o null si es válida
+ */
 function validarFechaHoraCitaServidor(fechaHoraStr) {
-  if (!fechaHoraStr) return "Fecha/hora de la cita es obligatoria.";
+  if (!fechaHoraStr) return 'Fecha/hora de la cita es obligatoria.';
 
   const d = new Date(fechaHoraStr);
   if (Number.isNaN(d.getTime())) {
-    return "La fecha y hora no son válidas.";
+    return 'La fecha y hora no son válidas.';
   }
 
   // Debe ser futura
   const ahora = new Date();
   if (d <= ahora) {
-    return "La cita debe ser en una fecha y hora futura.";
+    return 'La cita debe ser en una fecha y hora futura.';
   }
 
   // Solo lunes a viernes (0=Dom, 6=Sáb)
   const dia = d.getDay();
   if (dia === 0 || dia === 6) {
-    return "Solo se permiten citas de lunes a viernes.";
+    return 'Solo se permiten citas de lunes a viernes.';
   }
 
   const hora = d.getHours();
   const minutos = d.getMinutes();
 
-  // 🔹 Aquí está la clave:
-  // Permitimos de 08:00 a 16:00
+  // Horario permitido: 08:00 a 16:00
   if (hora < 8 || hora > 16) {
-    return "Horario permitido de 08:00 a 16:00 horas.";
+    return 'Horario permitido de 08:00 a 16:00 horas.';
   }
 
-  // Y solo horas exactas
+  // Solo horas exactas
   if (minutos !== 0) {
-    return "Las citas solo pueden agendarse en horas exactas (ej. 8:00, 9:00, 15:00).";
+    return 'Las citas solo pueden agendarse en horas exactas (ej. 8:00, 9:00, 15:00).';
   }
 
   return null; // todo bien
 }
 
-// Crear nueva cita para un paciente (desde el portal web)
-app.post('/api/pacientes/:id_paciente/citas', async (req, res) => {
-  try {
-    const { id_paciente } = req.params;
-    const { fecha_hora, motivo } = req.body;
+// ------------------------------------------
+// 4) ESTADO DEL SERVIDOR Y LOGIN
+// ------------------------------------------
 
-    if (!fecha_hora || !motivo) {
-      return res
-        .status(400)
-        .json({ error: 'Fecha/hora y motivo de la cita son obligatorios.' });
-    }
-
-    // ✅ Validar horario en el servidor
-    const errorHorario = validarFechaHoraCitaServidor(fecha_hora);
-    if (errorHorario) {
-      return res.status(400).json({ error: errorHorario });
-    }
-
-    // 1. Verificar que exista el paciente y obtener su médico tratante
-    const [pacRows] = await pool.query(
-      `SELECT id_medico_tratante
-       FROM pacientes
-       WHERE id_paciente = ?
-       LIMIT 1`,
-      [id_paciente]
-    );
-
-    if (pacRows.length === 0) {
-      return res.status(404).json({ error: 'Paciente no encontrado.' });
-    }
-
-    const idMedico = pacRows[0].id_medico_tratante || null;
-
-    // 2. Insertar la cita incluyendo el id_medico
-    const [result] = await pool.query(
-      `INSERT INTO citas (
-         id_paciente,
-         id_medico,
-         fecha_hora,
-         motivo,
-         estado_cita,
-         fecha_solicitud
-       ) VALUES (?, ?, ?, ?, 'programada', NOW())`,
-      [id_paciente, idMedico, fecha_hora, motivo]
-    );
-
-    res.status(201).json({
-      ok: true,
-      mensaje: 'Cita creada correctamente.',
-      id_cita: result.insertId,
-      id_medico: idMedico,
-    });
-  } catch (error) {
-    console.error('Error al crear cita:', error);
-    res.status(500).json({ error: 'Error al crear la cita.' });
-  }
-});
-
-
-// ---------------- ESTADO DEL SERVIDOR ----------------
+// Estado simple del servidor
 app.get('/api/estado', (req, res) => {
   res.json({ ok: true, mensaje: 'Backend de shospitalario funcionando ✅' });
 });
 
-// ---------------- LOGIN DE USUARIOS INTERNOS (MÉDICOS, ENFERMERÍA, ADMIN) ----------------
+// ---------- LOGIN DE USUARIOS INTERNOS (MÉDICOS, ENFERMERÍA, ADMIN) ----------
 
 app.post('/api/usuarios/login', async (req, res) => {
   try {
@@ -223,104 +207,52 @@ app.post('/api/usuarios/login', async (req, res) => {
   }
 });
 
-// ---------------- PACIENTES PARA PERSONAL (LISTA + RESUMEN DE EXPEDIENTE) ----------------
+// ---------- LOGIN PORTAL PACIENTES ----------
 
-// Listado básico de pacientes (uso interno, escritorio)
-app.get('/api/pacientes', async (req, res) => {
+app.post('/api/pacientes/login', async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      `SELECT
-         id_paciente,
-         nombre,
-         apellido_paterno,
-         apellido_materno,
-         curp,
-         fecha_nacimiento,
-         sexo,
-         estatus_afiliacion
-       FROM pacientes
-       ORDER BY nombre, apellido_paterno
-       LIMIT 100`
-    );
+    const { correo, contrasena } = req.body;
 
-    res.json(rows);
-  } catch (error) {
-    console.error('Error al obtener pacientes:', error);
-    res.status(500).json({ error: 'Error al obtener la lista de pacientes' });
-  }
-});
-
-// Resumen de expediente de un paciente
-app.get('/api/pacientes/:id_paciente/resumen-expediente', async (req, res) => {
-  try {
-    const { id_paciente } = req.params;
-
-    // Datos del paciente
-    const [pacRows] = await pool.query(
-      `SELECT
-         id_paciente,
-         nombre,
-         apellido_paterno,
-         apellido_materno,
-         curp,
-         fecha_nacimiento,
-         sexo,
-         telefono,
-         correo,
-         direccion,
-         estatus_afiliacion
-       FROM pacientes
-       WHERE id_paciente = ?
-       LIMIT 1`,
-      [id_paciente]
-    );
-
-    if (pacRows.length === 0) {
-      return res.status(404).json({ error: 'Paciente no encontrado' });
+    if (!correo || !contrasena) {
+      return res
+        .status(400)
+        .json({ error: 'Correo y contraseña son obligatorios' });
     }
 
-    const paciente = pacRows[0];
-
-    // Último expediente clínico (si hubiera más de uno)
-    const [expRows] = await pool.query(
-      `SELECT
-         id_expediente,
-         fecha_apertura,
-         estado_expediente,
-         observaciones,
-         fecha_ultima_actualizacion
-       FROM expedientes_clinicos
-       WHERE id_paciente = ?
-       ORDER BY fecha_apertura DESC
-       LIMIT 1`,
-      [id_paciente]
-    );
-
-    const expediente = expRows.length > 0 ? expRows[0] : null;
-
-    res.json({ paciente, expediente });
-  } catch (error) {
-    console.error('Error al obtener resumen de expediente:', error);
-    res.status(500).json({ error: 'Error al obtener el resumen del expediente' });
-  }
-});
-
-// ---------------- PACIENTES (ALTA Y CONSULTA BÁSICA) ----------------
-
-// Obtener todos los pacientes (uso interno, no portal)
-app.get('/api/pacientes', async (req, res) => {
-  try {
     const [rows] = await pool.query(
-      'SELECT * FROM pacientes WHERE activo = 1 ORDER BY id_paciente ASC'
+      `SELECT id_paciente, nombre, apellido_paterno, apellido_materno,
+              fecha_nacimiento, sexo, curp, telefono, correo, direccion,
+              estatus_afiliacion, contrasena
+       FROM pacientes
+       WHERE correo = ? AND activo = 1
+       LIMIT 1`,
+      [correo]
     );
-    res.json(rows);
+
+    if (rows.length === 0) {
+      return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+    }
+
+    const paciente = rows[0];
+
+    if (paciente.contrasena !== contrasena) {
+      return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+    }
+
+    delete paciente.contrasena;
+
+    res.json(paciente);
   } catch (error) {
-    console.error('Error al consultar pacientes:', error);
-    res.status(500).json({ error: 'Error al consultar pacientes' });
+    console.error('Error en login de paciente:', error);
+    res.status(500).json({ error: 'Error al iniciar sesión' });
   }
 });
 
-// Crear paciente / Crear cuenta desde el portal
+// ------------------------------------------
+// 5) PACIENTES (ALTA, CONSULTA, RESUMEN, POR MÉDICO)
+// ------------------------------------------
+
+// Alta de paciente / creación de cuenta desde el portal
 app.post('/api/pacientes', async (req, res) => {
   try {
     const {
@@ -395,7 +327,7 @@ app.post('/api/pacientes', async (req, res) => {
   }
 });
 
-// Obtener un paciente por ID
+// Obtener un paciente por ID (portal, datos básicos)
 app.get('/api/pacientes/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -419,50 +351,177 @@ app.get('/api/pacientes/:id', async (req, res) => {
   }
 });
 
-// ---------------- LOGIN PORTAL PACIENTES (correo + contraseña) ----------------
-
-app.post('/api/pacientes/login', async (req, res) => {
+// Listado de pacientes (uso interno, escritorio)
+app.get('/api/pacientes', async (req, res) => {
   try {
-    const { correo, contrasena } = req.body;
-
-    if (!correo || !contrasena) {
-      return res
-        .status(400)
-        .json({ error: 'Correo y contraseña son obligatorios' });
-    }
-
     const [rows] = await pool.query(
-      `SELECT id_paciente, nombre, apellido_paterno, apellido_materno,
-              fecha_nacimiento, sexo, curp, telefono, correo, direccion,
-              estatus_afiliacion, contrasena
+      `SELECT
+         id_paciente,
+         nombre,
+         apellido_paterno,
+         apellido_materno,
+         curp,
+         fecha_nacimiento,
+         sexo,
+         estatus_afiliacion
        FROM pacientes
-       WHERE correo = ? AND activo = 1
-       LIMIT 1`,
-      [correo]
+       WHERE activo = 1
+       ORDER BY nombre, apellido_paterno`
     );
 
-    if (rows.length === 0) {
-      return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
-    }
-
-    const paciente = rows[0];
-
-    if (paciente.contrasena !== contrasena) {
-      return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
-    }
-
-    delete paciente.contrasena;
-
-    res.json(paciente);
+    res.json(rows);
   } catch (error) {
-    console.error('Error en login de paciente:', error);
-    res.status(500).json({ error: 'Error al iniciar sesión' });
+    console.error('Error al obtener pacientes:', error);
+    res.status(500).json({ error: 'Error al obtener la lista de pacientes' });
   }
 });
 
-// ---------------- CITAS DEL PACIENTE (RF-3, RF-5) ----------------
+// Resumen de expediente de un paciente (para escritorio/médico)
+app.get('/api/pacientes/:id_paciente/resumen-expediente', async (req, res) => {
+  try {
+    const { id_paciente } = req.params;
 
-// Historial de citas de un paciente
+    // Datos del paciente
+    const [pacRows] = await pool.query(
+      `SELECT
+         id_paciente,
+         nombre,
+         apellido_paterno,
+         apellido_materno,
+         curp,
+         fecha_nacimiento,
+         sexo,
+         telefono,
+         correo,
+         direccion,
+         estatus_afiliacion
+       FROM pacientes
+       WHERE id_paciente = ?
+       LIMIT 1`,
+      [id_paciente]
+    );
+
+    if (pacRows.length === 0) {
+      return res.status(404).json({ error: 'Paciente no encontrado' });
+    }
+
+    const paciente = pacRows[0];
+
+    // Último expediente clínico (si hubiera más de uno)
+    const [expRows] = await pool.query(
+      `SELECT
+         id_expediente,
+         fecha_apertura,
+         estado_expediente,
+         observaciones,
+         fecha_ultima_actualizacion
+       FROM expedientes_clinicos
+       WHERE id_paciente = ?
+       ORDER BY fecha_apertura DESC
+       LIMIT 1`,
+      [id_paciente]
+    );
+
+    const expediente = expRows.length > 0 ? expRows[0] : null;
+
+    res.json({ paciente, expediente });
+  } catch (error) {
+    console.error('Error al obtener resumen de expediente:', error);
+    res.status(500).json({ error: 'Error al obtener el resumen del expediente' });
+  }
+});
+
+// Pacientes asignados a un médico (escritorio)
+app.get('/api/medicos/:id_medico/pacientes', async (req, res) => {
+  try {
+    const { id_medico } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT
+         p.id_paciente,
+         p.nombre,
+         p.apellido_paterno,
+         p.apellido_materno,
+         p.curp,
+         p.fecha_nacimiento,
+         p.sexo,
+         p.estatus_afiliacion
+       FROM pacientes p
+       WHERE p.id_medico_tratante = ? AND p.activo = 1
+       ORDER BY p.nombre, p.apellido_paterno`,
+      [id_medico]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener pacientes del médico:', error);
+    res.status(500).json({ error: 'Error al obtener pacientes del médico.' });
+  }
+});
+
+// ------------------------------------------
+// 6) CITAS (PORTAL PACIENTE + MÓDULO MÉDICO)
+// ------------------------------------------
+
+// Crear nueva cita para un paciente (portal web)
+app.post('/api/pacientes/:id_paciente/citas', async (req, res) => {
+  try {
+    const { id_paciente } = req.params;
+    const { fecha_hora, motivo } = req.body;
+
+    if (!fecha_hora || !motivo) {
+      return res
+        .status(400)
+        .json({ error: 'Fecha/hora y motivo de la cita son obligatorios.' });
+    }
+
+    // Validar horario en el servidor
+    const errorHorario = validarFechaHoraCitaServidor(fecha_hora);
+    if (errorHorario) {
+      return res.status(400).json({ error: errorHorario });
+    }
+
+    // 1. Verificar que exista el paciente y obtener su médico tratante
+    const [pacRows] = await pool.query(
+      `SELECT id_medico_tratante
+       FROM pacientes
+       WHERE id_paciente = ?
+       LIMIT 1`,
+      [id_paciente]
+    );
+
+    if (pacRows.length === 0) {
+      return res.status(404).json({ error: 'Paciente no encontrado.' });
+    }
+
+    const idMedico = pacRows[0].id_medico_tratante || null;
+
+    // 2. Insertar la cita incluyendo el id_medico
+    const [result] = await pool.query(
+      `INSERT INTO citas (
+         id_paciente,
+         id_medico,
+         fecha_hora,
+         motivo,
+         estado_cita,
+         fecha_solicitud
+       ) VALUES (?, ?, ?, ?, 'programada', NOW())`,
+      [id_paciente, idMedico, fecha_hora, motivo]
+    );
+
+    res.status(201).json({
+      ok: true,
+      mensaje: 'Cita creada correctamente.',
+      id_cita: result.insertId,
+      id_medico: idMedico,
+    });
+  } catch (error) {
+    console.error('Error al crear cita:', error);
+    res.status(500).json({ error: 'Error al crear la cita.' });
+  }
+});
+
+// Historial de citas de un paciente (portal)
 app.get('/api/pacientes/:id/citas', async (req, res) => {
   try {
     const { id } = req.params;
@@ -539,7 +598,7 @@ app.patch('/api/citas/:id_cita/cancelar', async (req, res) => {
   }
 });
 
-// ---------------- Cambiar estado de una cita (atendida / no asistió / etc.) ----------------
+// Cambiar estado de una cita (atendida / no asistió / etc.) con validación
 app.patch('/api/citas/:id_cita/estado', async (req, res) => {
   try {
     const { id_cita } = req.params;
@@ -602,73 +661,6 @@ app.patch('/api/citas/:id_cita/estado', async (req, res) => {
   }
 });
 
-
-// Solicitar nueva cita (portal web)
-app.post('/api/pacientes/:id_paciente/citas', async (req, res) => {
-  try {
-    const { id_paciente } = req.params;
-    const { fecha_hora, motivo } = req.body;
-
-    if (!fecha_hora || !motivo) {
-      return res
-        .status(400)
-        .json({ error: 'Fecha/hora y motivo de la cita son obligatorios.' });
-    }
-
-    // ✅ Validar horario permitido (lunes a viernes, 08–16, horas exactas)
-    const validacion = esFechaHoraValidaCita(fecha_hora);
-    if (!validacion.ok) {
-      return res.status(400).json({ error: validacion.mensaje });
-    }
-
-    // 1. Verificar que exista el paciente y obtener su médico tratante
-    const [pacRows] = await pool.query(
-      `SELECT id_medico_tratante
-       FROM pacientes
-       WHERE id_paciente = ?
-       LIMIT 1`,
-      [id_paciente]
-    );
-
-    if (pacRows.length === 0) {
-      return res.status(404).json({ error: 'Paciente no encontrado.' });
-    }
-
-    const idMedico = pacRows[0].id_medico_tratante || null;
-
-    // (Opcional) si quieres obligar a que todos tengan médico:
-    // if (!idMedico) {
-    //   return res.status(400).json({
-    //     error:
-    //       'El paciente no tiene médico tratante asignado. Favor de contactar al hospital.',
-    //   });
-    // }
-
-    // 2. Insertar la cita incluyendo el id_medico
-    const [result] = await pool.query(
-      `INSERT INTO citas (
-         id_paciente,
-         id_medico,
-         fecha_hora,
-         motivo,
-         estado_cita,
-         fecha_solicitud
-       ) VALUES (?, ?, ?, ?, 'programada', NOW())`,
-      [id_paciente, idMedico, fecha_hora, motivo]
-    );
-
-    res.status(201).json({
-      ok: true,
-      mensaje: 'Cita creada correctamente.',
-      id_cita: result.insertId,
-      id_medico: idMedico,
-    });
-  } catch (error) {
-    console.error('Error al crear cita:', error);
-    res.status(500).json({ error: 'Error al crear la cita.' });
-  }
-});
-
 // Reagendar cita (portal paciente)
 app.put('/api/citas/:id_cita', async (req, res) => {
   try {
@@ -679,9 +671,9 @@ app.put('/api/citas/:id_cita', async (req, res) => {
       return res.status(400).json({ error: 'id_paciente es obligatorio.' });
     }
 
-    const validacion = esFechaHoraValidaCita(nueva_fecha_hora);
-    if (!validacion.ok) {
-      return res.status(400).json({ error: validacion.mensaje });
+    const errorHorario = validarFechaHoraCitaServidor(nueva_fecha_hora);
+    if (errorHorario) {
+      return res.status(400).json({ error: errorHorario });
     }
 
     const [result] = await pool.query(
@@ -705,7 +697,6 @@ app.put('/api/citas/:id_cita', async (req, res) => {
 });
 
 // Citas de un médico (para la app de escritorio)
-// Citas del médico (futuras e historial)
 app.get('/api/medicos/:id_medico/citas', async (req, res) => {
   try {
     const { id_medico } = req.params;
@@ -747,13 +738,9 @@ app.get('/api/medicos/:id_medico/citas', async (req, res) => {
       }
     }
 
-    // Ordenamos: próximas ascendente, historial descendente (más reciente primero)
-    futuras.sort(
-      (a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora)
-    );
-    historial.sort(
-      (a, b) => new Date(b.fecha_hora) - new Date(a.fecha_hora)
-    );
+    // Ordenar: próximas ascendente, historial descendente
+    futuras.sort((a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora));
+    historial.sort((a, b) => new Date(b.fecha_hora) - new Date(a.fecha_hora));
 
     res.json({ futuras, historial });
   } catch (error) {
@@ -764,37 +751,24 @@ app.get('/api/medicos/:id_medico/citas', async (req, res) => {
   }
 });
 
-// Cambiar estado de una cita (ej. atendida, no asistió)
-app.patch('/api/citas/:id_cita/estado', async (req, res) => {
-  try {
-    const { id_cita } = req.params;
-    const { nuevo_estado } = req.body;
+// ------------------------------------------
+// 7) RECETAS MÉDICAS (PACIENTE Y EXPEDIENTE)
+// ------------------------------------------
 
-    if (!nuevo_estado) {
-      return res.status(400).json({ error: 'Debes enviar un nuevo estado.' });
-    }
-
-    await pool.query(
-      `UPDATE citas SET estado_cita = ?, fecha_actualizacion = NOW()
-       WHERE id_cita = ?`,
-      [nuevo_estado, id_cita]
-    );
-
-    res.json({ ok: true, mensaje: 'Estado de la cita actualizado.' });
-  } catch (error) {
-    console.error('Error al actualizar estado de cita:', error);
-    res.status(500).json({ error: 'Error al actualizar el estado de la cita.' });
-  }
-});
-
-
-// ---------------- RECETAS MÉDICAS DEL PACIENTE (RF-4) ----------------
-
+// Recetas del paciente (portal)
 app.get('/api/pacientes/:id/recetas', async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.query(
-      `SELECT id_receta, fecha_receta, descripcion, medicamentos, indicaciones
+      `SELECT 
+         id_receta,
+         fecha_receta,
+         descripcion,
+         medicamentos,
+         indicaciones,
+         archivo_nombre_original,
+         archivo_ruta,
+         archivo_tipo
        FROM recetas_medicas
        WHERE id_paciente = ?
        ORDER BY fecha_receta DESC`,
@@ -807,19 +781,218 @@ app.get('/api/pacientes/:id/recetas', async (req, res) => {
   }
 });
 
-// ---------------- RESULTADOS DE LABORATORIO DEL PACIENTE (RF-7) ----------------
+// Recetas de un expediente (para el módulo médico de escritorio)
+app.get('/api/expedientes/:id_expediente/recetas', async (req, res) => {
+  try {
+    const { id_expediente } = req.params;
 
+    // 1) Dueño del expediente
+    const [expRows] = await pool.query(
+      `SELECT id_paciente
+       FROM expedientes_clinicos
+       WHERE id_expediente = ?
+       LIMIT 1`,
+      [id_expediente]
+    );
+
+    if (expRows.length === 0) {
+      return res.status(404).json({ error: 'Expediente no encontrado.' });
+    }
+
+    const idPaciente = expRows[0].id_paciente;
+
+    // 2) Recetas del paciente (incluyendo archivo)
+    const [rows] = await pool.query(
+      `SELECT
+         id_receta,
+         fecha_receta,
+         descripcion,
+         archivo_nombre_original,
+         archivo_ruta,
+         archivo_tipo
+       FROM recetas_medicas
+       WHERE id_paciente = ?
+       ORDER BY fecha_receta DESC`,
+      [idPaciente]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener recetas:', error);
+    res.status(500).json({ error: 'Error al obtener recetas médicas.' });
+  }
+});
+
+// Registrar una nueva receta ligada al expediente (con archivo)
+app.post(
+  '/api/expedientes/:id_expediente/recetas',
+  uploadReceta.single('archivo'), // campo "archivo" en el form-data
+  async (req, res) => {
+    try {
+      const { id_expediente } = req.params;
+      const { id_medico, descripcion } = req.body;
+
+      // 1) Validaciones básicas
+      if (!id_medico) {
+        return res.status(400).json({
+          error: 'El id_medico es obligatorio.',
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          error: 'Debes adjuntar el archivo de la receta.',
+        });
+      }
+
+      // 2) Obtener al paciente dueño del expediente
+      const [expRows] = await pool.query(
+        `SELECT id_paciente
+         FROM expedientes_clinicos
+         WHERE id_expediente = ?
+         LIMIT 1`,
+        [id_expediente]
+      );
+
+      if (expRows.length === 0) {
+        return res.status(404).json({ error: 'Expediente no encontrado.' });
+      }
+
+      const idPaciente = expRows[0].id_paciente;
+
+      // 3) Datos del archivo
+      const rutaRelativa = path.join('uploads', 'recetas', req.file.filename);
+
+      // 4) Insertar la receta en la tabla recetas_medicas
+      const [result] = await pool.query(
+        `INSERT INTO recetas_medicas
+         (id_paciente,
+          id_medico,
+          fecha_receta,
+          descripcion,
+          medicamentos,
+          indicaciones,
+          archivo_nombre_original,
+          archivo_ruta,
+          archivo_tipo)
+         VALUES (?, ?, NOW(), ?, NULL, NULL, ?, ?, ?)`,
+        [
+          idPaciente,
+          id_medico,
+          descripcion || null,
+          req.file.originalname,
+          rutaRelativa,
+          req.file.mimetype,
+        ]
+      );
+
+      res.status(201).json({
+        ok: true,
+        mensaje: 'Receta con archivo registrada correctamente.',
+        id_receta: result.insertId,
+        archivo: rutaRelativa,
+      });
+    } catch (error) {
+      console.error('Error al registrar receta con archivo:', error);
+      res.status(500).json({
+        error: 'Error al registrar receta con archivo.',
+      });
+    }
+  }
+);
+
+// ------------------------------------------
+// 8) ÓRDENES Y RESULTADOS DE LABORATORIO
+// ------------------------------------------
+
+// Órdenes de laboratorio por expediente (escritorio)
+app.get('/api/expedientes/:id_expediente/ordenes-laboratorio', async (req, res) => {
+  try {
+    const { id_expediente } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT
+         id_orden,
+         id_expediente,
+         id_medico_solicita AS id_medico,
+         fecha_solicitud,
+         estado_orden,
+         observaciones
+       FROM ordenes_laboratorio
+       WHERE id_expediente = ?
+       ORDER BY fecha_solicitud DESC`,
+      [id_expediente]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener órdenes de laboratorio:', error);
+    res.status(500).json({ error: 'Error al obtener órdenes de laboratorio.' });
+  }
+});
+
+// Registrar / crear una nueva orden de laboratorio ligada al expediente
+app.post('/api/expedientes/:id_expediente/ordenes-laboratorio', async (req, res) => {
+  try {
+    const { id_expediente } = req.params;
+    const { id_medico, observaciones } = req.body;
+
+    if (!id_medico) {
+      return res
+        .status(400)
+        .json({ error: 'id_medico es obligatorio para la orden.' });
+    }
+
+    // Verificar que el expediente exista
+    const [expRows] = await pool.query(
+      `SELECT id_expediente
+       FROM expedientes_clinicos
+       WHERE id_expediente = ?
+       LIMIT 1`,
+      [id_expediente]
+    );
+
+    if (expRows.length === 0) {
+      return res.status(404).json({ error: 'Expediente no encontrado.' });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO ordenes_laboratorio
+         (id_expediente, id_medico_solicita, fecha_solicitud, estado_orden, observaciones)
+       VALUES (?, ?, NOW(), 'Solicitada', ?)`,
+      [id_expediente, id_medico, observaciones || null]
+    );
+
+    res.status(201).json({
+      ok: true,
+      mensaje: 'Orden de laboratorio registrada correctamente.',
+      id_orden: result.insertId,
+    });
+  } catch (error) {
+    console.error('Error al registrar orden de laboratorio:', error);
+    res.status(500).json({ error: 'Error al registrar orden de laboratorio.' });
+  }
+});
+
+// Resultados de laboratorio por paciente (portal web)
+// Además, marca las órdenes como "Resultado Listo" si ya tienen resultados
 app.get('/api/pacientes/:id/resultados-laboratorio', async (req, res) => {
   try {
     const { id } = req.params;
+
     const [rows] = await pool.query(
-      `SELECT r.id_resultado,
-              r.nombre_estudio,
-              r.resultado,
-              r.unidad,
-              r.valores_referencia,
-              r.fecha_resultado,
-              r.observaciones
+      `SELECT
+         r.id_resultado,
+         r.id_orden,
+         r.nombre_estudio,
+         r.resultado,
+         r.unidad,
+         r.valores_referencia,
+         r.fecha_resultado,
+         r.observaciones,
+         r.archivo_nombre_original,
+         r.archivo_ruta,
+         r.archivo_tipo
        FROM resultados_laboratorio r
        INNER JOIN ordenes_laboratorio o ON r.id_orden = o.id_orden
        INNER JOIN expedientes_clinicos e ON o.id_expediente = e.id_expediente
@@ -827,45 +1000,82 @@ app.get('/api/pacientes/:id/resultados-laboratorio', async (req, res) => {
        ORDER BY r.fecha_resultado DESC`,
       [id]
     );
+
+    // Marcar órdenes como "Resultado Listo" si tienen resultados
+    if (rows.length > 0) {
+      const idsUnicos = [...new Set(
+        rows.map((r) => r.id_orden).filter((x) => x != null)
+      )];
+
+      if (idsUnicos.length > 0) {
+        await pool.query(
+          `UPDATE ordenes_laboratorio
+           SET estado_orden = 'Resultado Listo'
+           WHERE id_orden IN (${idsUnicos.map(() => '?').join(',')})`,
+          idsUnicos
+        );
+      }
+    }
+
     res.json(rows);
   } catch (error) {
-    console.error('Error al consultar resultados de laboratorio:', error);
-    res.status(500).json({ error: 'Error al consultar resultados de laboratorio' });
+    console.error('Error al consultar resultados de laboratorio del paciente:', error);
+    res.status(500).json({ error: 'Error al consultar resultados de laboratorio.' });
   }
 });
 
-module.exports = app;
-
-// ---------------- PACIENTES ASIGNADOS A UN MÉDICO ----------------
-
-app.get('/api/medicos/:id_medico/pacientes', async (req, res) => {
+// Resultados de laboratorio por expediente (solo lectura para el médico)
+// También marca las órdenes como "Resultado Listo"
+app.get('/api/expedientes/:id_expediente/resultados-laboratorio', async (req, res) => {
   try {
-    const { id_medico } = req.params;
+    const { id_expediente } = req.params;
 
     const [rows] = await pool.query(
       `SELECT
-         p.id_paciente,
-         p.nombre,
-         p.apellido_paterno,
-         p.apellido_materno,
-         p.curp,
-         p.fecha_nacimiento,
-         p.sexo,
-         p.estatus_afiliacion
-       FROM pacientes p
-       WHERE p.id_medico_tratante = ? AND p.activo = 1
-       ORDER BY p.nombre, p.apellido_paterno`,
-      [id_medico]
+         r.id_resultado,
+         r.id_orden,
+         r.nombre_estudio,
+         r.resultado,
+         r.unidad,
+         r.valores_referencia,
+         r.fecha_resultado,
+         r.observaciones,
+         r.archivo_nombre_original,
+         r.archivo_ruta,
+         r.archivo_tipo
+       FROM resultados_laboratorio r
+       INNER JOIN ordenes_laboratorio o ON r.id_orden = o.id_orden
+       WHERE o.id_expediente = ?
+       ORDER BY r.fecha_resultado DESC`,
+      [id_expediente]
     );
+
+    // Marcar órdenes como "Resultado Listo" si tienen resultados
+    if (rows.length > 0) {
+      const idsUnicos = [...new Set(
+        rows.map((r) => r.id_orden).filter((id) => id != null)
+      )];
+
+      if (idsUnicos.length > 0) {
+        await pool.query(
+          `UPDATE ordenes_laboratorio
+           SET estado_orden = 'Resultado Listo'
+           WHERE id_orden IN (${idsUnicos.map(() => '?').join(',')})`,
+          idsUnicos
+        );
+      }
+    }
 
     res.json(rows);
   } catch (error) {
-    console.error('Error al obtener pacientes del médico:', error);
-    res.status(500).json({ error: 'Error al obtener pacientes del médico.' });
+    console.error('Error al obtener resultados de laboratorio:', error);
+    res.status(500).json({ error: 'Error al obtener resultados de laboratorio.' });
   }
 });
 
-// ---------------- NOTAS DE EVOLUCIÓN (MÉDICO) ----------------
+// ------------------------------------------
+// 9) NOTAS DE EVOLUCIÓN (EXPEDIENTE CLÍNICO)
+// ------------------------------------------
 
 // Listar notas de un expediente
 app.get('/api/expedientes/:id_expediente/notas', async (req, res) => {
@@ -925,192 +1135,8 @@ app.post('/api/expedientes/:id_expediente/notas', async (req, res) => {
   }
 });
 
-// ============================
-// RECETAS MÉDICAS POR EXPEDIENTE
-// (usando id_paciente internamente)
-// ============================
+// ------------------------------------------
+// EXPORTAR APP
+// ------------------------------------------
 
-// Recetas de un expediente (para el módulo médico de escritorio)
-app.get('/api/expedientes/:id_expediente/recetas', async (req, res) => {
-  try {
-    const { id_expediente } = req.params;
-
-    // 1) Dueño del expediente
-    const [expRows] = await pool.query(
-      `SELECT id_paciente
-       FROM expedientes_clinicos
-       WHERE id_expediente = ?
-       LIMIT 1`,
-      [id_expediente]
-    );
-
-    if (expRows.length === 0) {
-      return res.status(404).json({ error: 'Expediente no encontrado.' });
-    }
-
-    const idPaciente = expRows[0].id_paciente;
-
-    // 2) Recetas del paciente (incluyendo archivo)
-    const [rows] = await pool.query(
-      `SELECT
-         id_receta,
-         fecha_receta,
-         descripcion,
-         archivo_nombre_original,
-         archivo_ruta,
-         archivo_tipo
-       FROM recetas_medicas
-       WHERE id_paciente = ?
-       ORDER BY fecha_receta DESC`,
-      [idPaciente]
-    );
-
-    res.json(rows);
-  } catch (error) {
-    console.error('Error al obtener recetas:', error);
-    res.status(500).json({ error: 'Error al obtener recetas médicas.' });
-  }
-});
-
-
-// Registrar una nueva receta médica (archivo + descripción opcional) ligada al expediente
-app.post(
-  '/api/expedientes/:id_expediente/recetas',
-  uploadReceta.single('archivo'), // campo "archivo" en el form-data
-  async (req, res) => {
-    try {
-      const { id_expediente } = req.params;
-      const { id_medico, descripcion } = req.body;
-
-      // 1) Validaciones básicas
-      if (!id_medico) {
-        return res.status(400).json({
-          error: 'El id_medico es obligatorio.',
-        });
-      }
-
-      if (!req.file) {
-        return res.status(400).json({
-          error: 'Debes adjuntar el archivo de la receta.',
-        });
-      }
-
-      // 2) Obtener al paciente dueño del expediente
-      const [expRows] = await pool.query(
-        `SELECT id_paciente
-         FROM expedientes_clinicos
-         WHERE id_expediente = ?
-         LIMIT 1`,
-        [id_expediente]
-      );
-
-      if (expRows.length === 0) {
-        return res.status(404).json({ error: 'Expediente no encontrado.' });
-      }
-
-      const idPaciente = expRows[0].id_paciente;
-
-      // 3) Datos del archivo
-      //  - req.file.filename es el nombre que generaste con multer
-      //  - aquí guardamos ruta relativa para luego servirlo
-      const rutaRelativa = path.join('uploads', 'recetas', req.file.filename);
-
-      // 4) Insertar la receta en la tabla recetas_medicas
-      //    Dejamos medicamentos e indicaciones en NULL porque ya no los usamos
-      const [result] = await pool.query(
-        `INSERT INTO recetas_medicas
-         (id_paciente,
-          id_medico,
-          fecha_receta,
-          descripcion,
-          medicamentos,
-          indicaciones,
-          archivo_nombre_original,
-          archivo_ruta,
-          archivo_tipo)
-         VALUES (?, ?, NOW(), ?, NULL, NULL, ?, ?, ?)`,
-        [
-          idPaciente,
-          id_medico,
-          descripcion || null,       // descripción opcional
-          req.file.originalname,     // nombre original del archivo
-          rutaRelativa,              // ruta relativa donde lo guardaste
-          req.file.mimetype,         // tipo MIME (application/pdf, etc.)
-        ]
-      );
-
-      res.status(201).json({
-        ok: true,
-        mensaje: 'Receta con archivo registrada correctamente.',
-        id_receta: result.insertId,
-        archivo: rutaRelativa,
-      });
-    } catch (error) {
-      console.error('Error al registrar receta con archivo:', error);
-      res.status(500).json({
-        error: 'Error al registrar receta con archivo.',
-      });
-    }
-  }
-);
-
-
-
-
-// ---------------- ÓRDENES DE LABORATORIO (MÉDICO) ----------------
-
-// Listar órdenes de laboratorio de un expediente
-app.get('/api/expedientes/:id_expediente/ordenes-laboratorio', async (req, res) => {
-  try {
-    const { id_expediente } = req.params;
-
-    const [rows] = await pool.query(
-      `SELECT
-         o.id_orden,
-         o.id_expediente,
-         o.id_medico_solicita,
-         o.fecha_solicitud,
-         o.estado_orden,
-         o.observaciones
-       FROM ordenes_laboratorio o
-       WHERE o.id_expediente = ?
-       ORDER BY o.fecha_solicitud DESC
-       LIMIT 50`,
-      [id_expediente]
-    );
-
-    res.json(rows);
-  } catch (error) {
-    console.error('Error al obtener órdenes de laboratorio:', error);
-    res.status(500).json({ error: 'Error al obtener órdenes de laboratorio.' });
-  }
-});
-
-// Crear una nueva orden de laboratorio
-app.post('/api/expedientes/:id_expediente/ordenes-laboratorio', async (req, res) => {
-  try {
-    const { id_expediente } = req.params;
-    const { id_medico, observaciones } = req.body;
-
-    if (!id_medico) {
-      return res
-        .status(400)
-        .json({ error: 'id_medico es obligatorio para la orden.' });
-    }
-
-    const [result] = await pool.query(
-      `INSERT INTO ordenes_laboratorio
-         (id_expediente, id_medico_solicita, fecha_solicitud, estado_orden, observaciones)
-       VALUES (?, ?, NOW(), 'solicitada', ?)`,
-      [id_expediente, id_medico, observaciones || null]
-    );
-
-    res.status(201).json({
-      ok: true,
-      id_orden: result.insertId,
-    });
-  } catch (error) {
-    console.error('Error al crear orden de laboratorio:', error);
-    res.status(500).json({ error: 'Error al crear orden de laboratorio.' });
-  }
-});
+module.exports = app;
