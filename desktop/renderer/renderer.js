@@ -1,1302 +1,1499 @@
-// renderer.js - Escritorio médico (Electron) Hospital ADS
-// ------------------------------------------------------
-// Organización:
-//
-//  1) Referencias a elementos del DOM y constantes
-//  2) Utilidades de fecha/hora y estados
-//  3) Login de usuario interno
-//  4) Paneles por rol (Médico, Enfermería, Admin)
-//  5) Agenda de citas del médico
-//  6) Pacientes asignados al médico + expediente con pestañas
-//  7) Pestaña Notas de evolución
-//  8) Pestaña Recetas médicas (subida y visualización de archivo)
-//  9) Pestaña Órdenes de laboratorio (expediente)
-// 10) Pestaña Resultados de laboratorio (expediente)
-// 11) Órdenes de laboratorio - Vista del médico (listado + detalle)
-// ------------------------------------------------------
+// renderer.js - Hospital ADS (Electron) UI médico
+// Enfoque: topbar fija, layout full-screen, pacientes con buscador,
+// expediente con tabs estilizados, notas con editar + historial.
 
-
-// ------------------------------------------------------
-// 1) REFERENCIAS A DOM Y CONSTANTES
-// ------------------------------------------------------
-
-const form = document.getElementById("login-form");
-const rolPreview = document.getElementById("rol-preview");
-const loginCard = document.getElementById("login-card");
-
-// Paneles por rol
-const panelMedico = document.getElementById("panel-medico");
-const panelEnfermeria = document.getElementById("panel-enfermeria");
-const panelAdmin = document.getElementById("panel-admin");
-
-// Textos informativos
-const infoMedico = document.getElementById("info-medico");
-const infoEnfermeria = document.getElementById("info-enfermeria");
-const infoAdmin = document.getElementById("info-admin");
-
-// URL del backend
 const BACKEND_URL = "http://localhost:3000";
 
-// Aquí guardamos los datos del médico logueado (incluye id_medico)
-let medicoActual = null;
+// Estado global
+let session = {
+  usuario: null,
+  roles: [],
+  medico: null,
+};
 
+let navStack = []; // para botón regresar
+let currentView = { name: "login", params: {} };
 
-// ------------------------------------------------------
-// 2) UTILIDADES DE FECHA/HORA Y ESTADOS
-// ------------------------------------------------------
+// Cache
+let cachePacientes = [];
 
-function toLocalInputDateTime(value) {
+// ------------------------------
+// Helpers
+// ------------------------------
+function $(sel, root = document) {
+  return root.querySelector(sel);
+}
+
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k === "style") el.setAttribute("style", v);
+    else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) el.setAttribute(k, String(v));
+  }
+  for (const c of children.flat()) {
+    if (c === null || c === undefined) continue;
+    if (typeof c === "string") el.appendChild(document.createTextNode(c));
+    else el.appendChild(c);
+  }
+  return el;
+}
+
+function escapeHtml(str) {
+  return (str ?? "").toString()
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function fmtDateTime(value) {
   if (!value) return "";
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const tzOffset = d.getTimezoneOffset() * 60000; // minutos -> ms
-  const local = new Date(d.getTime() - tzOffset);
-  return local.toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm"
+  if (Number.isNaN(d.getTime())) return String(value);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function formatDateTimeDisplay(value) {
-  const input = toLocalInputDateTime(value);
-  if (!input) return "";
-  return input.replace("T", " "); // "YYYY-MM-DD HH:mm"
+async function api(path, opts = {}) {
+  const res = await fetch(`${BACKEND_URL}${path}`, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data.error || data.message || `Error ${res.status}`;
+    throw new Error(msg);
+  }
+  return data;
 }
 
-// Estado que se considera como “resultado listo” (case-sensitive)
-function esEstadoResultadoListo(estado) {
-  return (estado || "").trim() === "Resultado Listo";
+function setView(name, params = {}, { pushHistory = true } = {}) {
+  if (pushHistory && currentView.name !== "login") {
+    navStack.push(currentView);
+  }
+  currentView = { name, params };
+  render();
 }
 
+function goBack() {
+  if (navStack.length === 0) return;
+  const prev = navStack.pop();
+  currentView = prev;
+  render();
+}
 
-// ------------------------------------------------------
-// 3) LOGIN DE USUARIO INTERNO
-// ------------------------------------------------------
+function showToast(msg, type = "info") {
+  const host = $("#ads-toast-host");
+  if (!host) return alert(msg);
+  const toast = h(
+    "div",
+    { class: `ads-toast ads-toast--${type}` },
+    msg
+  );
+  host.appendChild(toast);
+  setTimeout(() => toast.classList.add("is-show"), 10);
+  setTimeout(() => {
+    toast.classList.remove("is-show");
+    setTimeout(() => toast.remove(), 200);
+  }, 2800);
+}
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
+function iconOrText(imgName, fallback) {
+  // Solo indicamos dónde poner la imagen. Tú metes el archivo en: desktop/renderer/imagenes/
+  // ejemplo: desktop/renderer/imagenes/icono-back.png
+  const src = `./imagenes/${imgName}`;
+  return h(
+    "span",
+    { class: "ads-icwrap" },
+    h("img", {
+      class: "ads-ic",
+      src,
+      alt: fallback,
+      onerror: (e) => {
+        e.target.remove();
+      },
+    }),
+    h("span", { class: "ads-ic-fallback" }, fallback)
+  );
+}
 
+// ------------------------------
+// CSS (inyectado)
+// ------------------------------
+function injectStyles() {
+  if ($("#ads-theme")) return;
+  const css = `
+  :root{
+    --bg:#F5F7FA;
+    --card:#ffffff;
+    --muted:#64748b;
+    --text:#0f172a;
+    --line:#e5e7eb;
+    --primary:#2563eb;
+    --primary-2:#1d4ed8;
+    --ok:#16a34a;
+    --warn:#f59e0b;
+    --bad:#dc2626;
+    --shadow: 0 10px 30px rgba(2, 6, 23, .06);
+    --radius: 14px;
+    --radius2: 12px;
+  }
+  *{ box-sizing:border-box; }
+  body{ background:var(--bg); color:var(--text); }
+  a{ color:var(--primary); text-decoration:none; }
+
+  /* Layout */
+  .ads-shell{ height:100%; }
+  .ads-topbar{
+    position:fixed; top:0; left:0; right:0;
+    height:84px;
+    display:flex; align-items:center; gap:16px;
+    padding:14px 18px;
+    background: rgba(245,247,250,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    z-index: 999;
+  }
+  .ads-topbar__inner{
+    width: 100%;
+    max-width: 1300px;
+    margin: 0 auto;
+    display:flex; align-items:center; gap:16px;
+  }
+  .ads-brand{ display:flex; align-items:center; gap:12px; min-width: 240px; }
+  .ads-brand__logo{
+    width:46px; height:46px; border-radius:12px;
+    background: #eaf1ff;
+    display:flex; align-items:center; justify-content:center;
+    border: 1px solid #dbeafe;
+    overflow:hidden;
+  }
+  .ads-brand__logo img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .ads-brand__txt{ line-height:1.1; }
+  .ads-brand__txt b{ display:block; font-size:16px; }
+  .ads-brand__txt span{ color:var(--muted); font-size:12px; }
+
+  .ads-tabs{ display:flex; gap:10px; align-items:center; flex: 1; justify-content:center; }
+  .ads-tab{
+    display:flex; align-items:center; gap:10px;
+    padding:10px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    cursor:pointer;
+    transition: transform .08s ease, box-shadow .15s ease, border-color .15s ease;
+    font-weight: 600;
+  }
+  .ads-tab:hover{ border-color:#cbd5e1; box-shadow: 0 8px 20px rgba(2,6,23,.05); }
+  .ads-tab:active{ transform: translateY(1px); }
+  .ads-tab.is-active{ background: #eaf1ff; border-color: #c7ddff; color: var(--primary-2); }
+
+  .ads-actions{ display:flex; gap:10px; align-items:center; justify-content:flex-end; min-width: 240px; }
+  .ads-iconbtn{
+    width:40px; height:40px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition: box-shadow .15s ease, border-color .15s ease, transform .08s ease;
+  }
+  .ads-iconbtn:hover{ border-color:#cbd5e1; box-shadow: 0 8px 20px rgba(2,6,23,.05); }
+  .ads-iconbtn:active{ transform: translateY(1px); }
+
+  .ads-main{
+    padding: 110px 20px 24px;
+  }
+  .ads-container{
+    width:100%;
+    max-width: 1300px;
+    margin: 0 auto;
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+  }
+
+  .ads-card{
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  .ads-card__hd{ padding: 16px 18px; border-bottom: 1px solid var(--line); display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+  .ads-card__hd h2,.ads-card__hd h3{ margin:0; }
+  .ads-card__bd{ padding: 16px 18px; }
+
+  .ads-muted{ color: var(--muted); }
+
+  /* Forms */
+  .ads-row{ display:flex; gap:12px; flex-wrap:wrap; align-items:end; }
+  .ads-field{ display:flex; flex-direction:column; gap:6px; min-width: 240px; flex:1; }
+  .ads-field label{ font-size: 12px; color: var(--muted); font-weight: 600; }
+  .ads-input, .ads-select, .ads-textarea{
+    width: 100%;
+    padding: 11px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #fff;
+    outline: none;
+    transition: border-color .15s ease, box-shadow .15s ease;
+    font-size: 14px;
+  }
+  .ads-textarea{ min-height: 110px; resize: vertical; }
+  .ads-input:focus, .ads-select:focus, .ads-textarea:focus{
+    border-color: #b8d2ff;
+    box-shadow: 0 0 0 4px rgba(37,99,235,.12);
+  }
+
+  .ads-btn{
+    border: 0;
+    padding: 11px 14px;
+    border-radius: 12px;
+    background: var(--primary);
+    color: white;
+    font-weight: 700;
+    cursor:pointer;
+    transition: transform .08s ease, filter .15s ease;
+  }
+  .ads-btn:hover{ filter: brightness(.98); }
+  .ads-btn:active{ transform: translateY(1px); }
+  .ads-btn--ghost{ background: #f1f5f9; color:#0f172a; }
+  .ads-btn--danger{ background: var(--bad); }
+
+  /* Tables */
+  .ads-tablewrap{ overflow:auto; border-radius: 12px; border: 1px solid var(--line); }
+  table.ads-table{ width:100%; border-collapse:collapse; min-width: 760px; }
+  table.ads-table th{
+    text-align:left;
+    background: #eef6ff;
+    border-bottom: 1px solid var(--line);
+    padding: 12px;
+    font-size: 13px;
+  }
+  table.ads-table td{ padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.ads-table tr:hover td{ background: #fafcff; }
+
+  .ads-pill{
+    display:inline-flex; align-items:center; gap:6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 12px;
+    border: 1px solid var(--line);
+    background: #fff;
+  }
+  .ads-pill--ok{ background:#ecfdf3; border-color:#bbf7d0; color: var(--ok); }
+  .ads-pill--warn{ background:#fffbeb; border-color:#fde68a; color: var(--warn); }
+  .ads-pill--bad{ background:#fef2f2; border-color:#fecaca; color: var(--bad); }
+
+  /* Expediente tabs */
+  .ads-subtabs{ display:flex; gap:10px; flex-wrap:wrap; }
+  .ads-subtab{
+    padding: 10px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: #fff;
+    cursor:pointer;
+    font-weight: 800;
+  }
+  .ads-subtab.is-active{ background:#eaf1ff; border-color:#c7ddff; color: var(--primary-2); }
+
+  .ads-note{
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+    background: #fff;
+  }
+  .ads-note__hd{ display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+  .ads-note__meta{ font-size: 12px; color: var(--muted); }
+  .ads-note__actions{ display:flex; gap:8px; }
+  .ads-note__body{ margin-top: 10px; white-space: pre-wrap; }
+
+  /* Login */
+  .ads-login{
+    min-height: 100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding: 24px;
+  }
+  .ads-login-card{ width: min(840px, 96vw); display:grid; grid-template-columns: 1.05fr .95fr; gap: 0; overflow:hidden; }
+  .ads-login-left{ padding: 26px; background: linear-gradient(135deg, #eaf1ff, #f5f7fa); }
+  .ads-login-right{ padding: 26px; }
+  .ads-login-brand{ display:flex; align-items:center; gap:12px; }
+  .ads-login-brand .logo{ width:54px; height:54px; border-radius: 16px; overflow:hidden; background:#fff; border:1px solid #dbeafe; }
+  .ads-login-brand .logo img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .ads-login-brand .txt b{ display:block; font-size:18px; }
+  .ads-login-brand .txt span{ color: var(--muted); font-size:13px; }
+  .ads-login-hero{ margin-top: 18px; color: #0f172a; }
+  .ads-login-hero h1{ margin: 12px 0 8px; font-size: 24px; }
+  .ads-login-hero p{ margin: 0; color: var(--muted); }
+  .ads-alert{ margin-top: 14px; padding: 12px 12px; border-radius: 12px; border: 1px dashed #cbd5e1; color: #0f172a; background:#ffffffa6; }
+
+  /* Toast */
+  #ads-toast-host{ position: fixed; right: 16px; bottom: 16px; display:flex; flex-direction:column; gap:10px; z-index: 2000; }
+  .ads-toast{ opacity:0; transform: translateY(6px); transition: all .2s ease; padding: 12px 14px; border-radius: 12px; border:1px solid var(--line); background: #fff; box-shadow: var(--shadow); max-width: 360px; }
+  .ads-toast.is-show{ opacity: 1; transform: translateY(0); }
+  .ads-toast--error{ border-color:#fecaca; }
+  .ads-toast--ok{ border-color:#bbf7d0; }
+
+  /* Icons */
+  .ads-icwrap{ display:inline-flex; align-items:center; gap:8px; }
+  .ads-ic{ width:18px; height:18px; }
+  .ads-ic-fallback{ font-size: 14px; }
+
+  @media (max-width: 920px){
+    .ads-brand{ min-width: auto; }
+    .ads-actions{ min-width:auto; }
+    .ads-login-card{ grid-template-columns: 1fr; }
+  }
+  `;
+
+  const style = document.createElement("style");
+  style.id = "ads-theme";
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
+// ------------------------------
+// Layout base
+// ------------------------------
+function ensureShell() {
+  injectStyles();
+  const app = document.getElementById("app");
+  if (!app) throw new Error("No se encontró #app");
+  app.innerHTML = "";
+
+  const shell = h("div", { class: "ads-shell" });
+
+  // Topbar
+  const topbar = h("header", { class: "ads-topbar", id: "ads-topbar" });
+  const inner = h("div", { class: "ads-topbar__inner" });
+
+  const brand = h(
+    "div",
+    { class: "ads-brand" },
+    h(
+      "div",
+      { class: "ads-brand__logo" },
+      // Pon tu imagen en: desktop/renderer/imagenes/logo.png
+      h("img", {
+        src: "./imagenes/logo.png",
+        alt: "Hospital ADS",
+        onerror: (e) => {
+          // si no existe el logo, dejamos un ícono de fallback
+          e.target.remove();
+          const box = e.target.parentElement;
+          box.textContent = "H";
+          box.style.fontWeight = "900";
+          box.style.color = "#2563eb";
+        },
+      })
+    ),
+    h(
+      "div",
+      { class: "ads-brand__txt" },
+      h("b", {}, "Hospital ADS"),
+      h("span", { id: "ads-brand-sub" }, "Módulo Médico")
+    )
+  );
+
+  const tabs = h("nav", { class: "ads-tabs", id: "ads-tabs" },
+    tabBtn("pacientes", "icono-pacientes.png", "Pacientes"),
+    tabBtn("agenda", "icono-citas.png", "Agenda"),
+    tabBtn("notas", "icono-notas.png", "Notas"),
+    tabBtn("ordenes", "icono-lab.png", "Laboratorio")
+  );
+
+  const actions = h("div", { class: "ads-actions" },
+    iconButton("Inicio", "icono-home.png", () => setView("pacientes", {}, { pushHistory: false })),
+    iconButton("Regresar", "icono-back.png", () => goBack()),
+    iconButton("Recargar", "icono-recargar.png", () => render()),
+    iconButton("Salir", "icono-salir.png", () => logout())
+  );
+
+  inner.appendChild(brand);
+  inner.appendChild(tabs);
+  inner.appendChild(actions);
+  topbar.appendChild(inner);
+
+  // Main
+  const main = h("main", { class: "ads-main" },
+    h("div", { class: "ads-container", id: "ads-container" })
+  );
+
+  shell.appendChild(topbar);
+  shell.appendChild(main);
+  shell.appendChild(h("div", { id: "ads-toast-host" }));
+
+  app.appendChild(shell);
+
+  // Oculta topbar en login
+  if (currentView.name === "login") {
+    topbar.style.display = "none";
+    main.style.paddingTop = "24px";
+  }
+}
+
+function tabBtn(view, iconFile, label) {
+  const btn = h(
+    "button",
+    {
+      class: "ads-tab",
+      type: "button",
+      onclick: () => setView(view, {}, { pushHistory: false }),
+    },
+    iconOrText(iconFile, ""),
+    h("span", {}, label)
+  );
+  btn.dataset.view = view;
+  return btn;
+}
+
+function iconButton(title, iconFile, onClick) {
+  return h(
+    "button",
+    {
+      class: "ads-iconbtn",
+      type: "button",
+      title,
+      onclick: onClick,
+    },
+    // Pon tu icono en: desktop/renderer/imagenes/<iconFile>
+    h("img", {
+      src: `./imagenes/${iconFile}`,
+      alt: title,
+      class: "ads-ic",
+      onerror: (e) => {
+        e.target.remove();
+        // fallback minimal
+        const span = document.createElement("span");
+        span.className = "ads-ic-fallback";
+        span.textContent = title.slice(0, 1);
+        e.currentTarget.appendChild(span);
+      },
+    })
+  );
+}
+
+function setActiveTab() {
+  const tabs = document.querySelectorAll(".ads-tab");
+  tabs.forEach((t) => t.classList.toggle("is-active", t.dataset.view === currentView.name));
+}
+
+// ------------------------------
+// Login
+// ------------------------------
+function renderLogin() {
+  const container = $("#ads-container");
+  container.innerHTML = "";
+
+  const card = h("div", { class: "ads-card ads-login-card" });
+
+  const left = h("div", { class: "ads-login-left" },
+    h("div", { class: "ads-login-brand" },
+      h("div", { class: "logo" },
+        // Pon tu logo en: desktop/renderer/imagenes/logo.png
+        h("img", {
+          src: "./imagenes/logo.png",
+          alt: "Hospital ADS",
+          onerror: (e) => { e.target.remove(); e.currentTarget.textContent = "H"; e.currentTarget.style.display="flex"; e.currentTarget.style.alignItems="center"; e.currentTarget.style.justifyContent="center"; e.currentTarget.style.fontWeight="900"; e.currentTarget.style.color="#2563eb"; },
+        })
+      ),
+      h("div", { class: "txt" },
+        h("b", {}, "Hospital ADS"),
+        h("span", {}, "Aplicación de escritorio")
+      )
+    ),
+    h("div", { class: "ads-login-hero" },
+      h("h1", {}, "Inicio de sesión"),
+      h("p", {}, "Ingresa con tu usuario del hospital. Verás las opciones según tu rol."),
+      h("div", { class: "ads-alert", id: "ads-login-msg" }, "")
+    )
+  );
+
+  const right = h("div", { class: "ads-login-right" });
+
+  const form = h("form", { id: "login-form" },
+    h("div", { class: "ads-field" },
+      h("label", {}, "Usuario"),
+      h("input", { class: "ads-input", name: "usuario", autocomplete: "username", placeholder: "usuario" })
+    ),
+    h("div", { class: "ads-field" },
+      h("label", {}, "Contraseña"),
+      h("input", { class: "ads-input", type: "password", name: "contrasena", autocomplete: "current-password", placeholder: "••••" })
+    ),
+    h("div", { class: "ads-row" },
+      h("button", { class: "ads-btn", type: "submit", style: "min-width:180px;" }, "Ingresar"),
+      h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => { $("#login-form [name=usuario]").value=""; $("#login-form [name=contrasena]").value=""; } }, "Limpiar")
+    )
+  );
+
+  form.addEventListener("submit", onLogin);
+  right.appendChild(form);
+
+  card.appendChild(left);
+  card.appendChild(right);
+
+  container.appendChild(card);
+
+  const msg = $("#ads-login-msg");
+  msg.textContent = "";
+}
+
+async function onLogin(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
   const usuario = form.usuario.value.trim();
   const contrasena = form.contrasena.value.trim();
+  const msg = $("#ads-login-msg");
 
   if (!usuario || !contrasena) {
-    rolPreview.textContent = "Debes ingresar usuario y contraseña.";
+    msg.textContent = "Debes ingresar usuario y contraseña.";
     return;
   }
 
-  rolPreview.textContent = "Verificando credenciales contra el servidor...";
+  msg.textContent = "Verificando credenciales…";
 
   try {
-    const res = await fetch(`${BACKEND_URL}/api/usuarios/login`, {
+    const data = await api("/api/usuarios/login", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        nombre_usuario: usuario,
-        contrasena,
-      }),
+      body: JSON.stringify({ nombre_usuario: usuario, contrasena }),
     });
 
-    const data = await res.json().catch(() => ({}));
+    session.usuario = data.nombre_usuario;
+    session.roles = data.roles || [];
+    session.medico = data.medico || null;
 
-    if (!res.ok) {
-      throw new Error(data.error || "No fue posible iniciar sesión.");
-    }
+    // Persistimos solo para no pedir login a cada rato (si quieres, lo quitamos)
+    localStorage.setItem("ads_session", JSON.stringify(session));
 
-    const roles = data.roles || [];
-    const rolesTexto = roles.length > 0 ? roles.join(", ") : "SIN ROL";
-
-    rolPreview.innerHTML = `
-      Inicio de sesión correcto.<br/>
-      <strong>Usuario:</strong> ${data.nombre_usuario}<br/>
-      <strong>Roles:</strong> ${rolesTexto}
-    `;
-
-    // Ocultamos login y mostramos panel según rol
-    loginCard.style.display = "none";
-
-    if (roles.includes("MEDICO")) {
-      mostrarPanelMedico(data);
-    } else if (roles.includes("ENFERMERIA")) {
-      mostrarPanelEnfermeria(data);
-    } else if (roles.includes("ADMIN")) {
-      mostrarPanelAdmin(data);
-    } else {
-      // Usuario sin rol conocido: panel admin genérico
-      mostrarPanelAdmin(data, true);
-    }
-  } catch (err) {
-    console.error(err);
-    rolPreview.textContent = err.message;
-  }
-});
-
-
-// ------------------------------------------------------
-// 4) PANELES POR ROL
-// ------------------------------------------------------
-
-// ---------- Panel médico ----------
-function mostrarPanelMedico(data) {
-  panelMedico.style.display = "block";
-  panelEnfermeria.style.display = "none";
-  panelAdmin.style.display = "none";
-
-  medicoActual = data.medico || null;
-
-  if (medicoActual) {
-    infoMedico.textContent = `Sesión iniciada como ${medicoActual.nombre} ${
-      medicoActual.apellido_paterno || ""
-    } (${medicoActual.especialidad || "Sin especialidad"}).`;
-  } else {
-    infoMedico.textContent =
-      "Sesión iniciada como médico. (Los datos del médico no están completos en la base de datos).";
-  }
-
-  const contenido = document.getElementById("contenido-medico");
-
-  // Listeners del menú lateral
-  document
-    .querySelectorAll("#panel-medico [data-vista]")
-    .forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const vista = btn.getAttribute("data-vista");
-        actualizarVistaMedico(contenido, vista);
-      });
-    });
-
-  // Vista por defecto
-  actualizarVistaMedico(contenido, "pacientes");
-}
-
-function actualizarVistaMedico(contenido, vista) {
-  if (vista === "pacientes") {
-    cargarPacientesMedico(contenido);
-    return;
-  }
-
-  if (vista === "agenda") {
-    cargarAgendaMedico(contenido);
-    return;
-  }
-
-  if (vista === "ordenes") {
-    cargarOrdenesMedico(contenido);
-    return;
-  }
-
-  // Vista genérica de notas (informativa)
-  if (vista === "notas") {
-    contenido.innerHTML = `
-      <h3>Notas de evolución</h3>
-      <p class="texto-suave">
-        Desde esta sección el médico podrá registrar notas de evolución en el expediente
-        (<strong>tabla notas_evolucion</strong>), cumpliendo con la NOM.
-      </p>
-      <p class="texto-suave">
-        Esta vista se complementa con la pestaña "Notas de evolución" dentro del expediente.
-      </p>
-    `;
-    return;
-  }
-}
-
-// ---------- Panel enfermería ----------
-function mostrarPanelEnfermeria(data) {
-  panelMedico.style.display = "none";
-  panelEnfermeria.style.display = "block";
-  panelAdmin.style.display = "none";
-
-  infoEnfermeria.textContent = `Sesión iniciada como ${data.nombre_usuario} (rol: ENFERMERÍA).`;
-}
-
-// ---------- Panel admin ----------
-function mostrarPanelAdmin(data, sinRol = false) {
-  panelMedico.style.display = "none";
-  panelEnfermeria.style.display = "none";
-  panelAdmin.style.display = "block";
-
-  if (sinRol) {
-    infoAdmin.textContent = `Sesión iniciada como ${data.nombre_usuario}, pero no se encontró un rol específico. Se muestra el panel de administración genérico.`;
-  } else {
-    infoAdmin.textContent = `Sesión iniciada como ${data.nombre_usuario} (rol: ADMIN).`;
-  }
-}
-
-
-// ------------------------------------------------------
-// 5) AGENDA DE CITAS DEL MÉDICO
-// ------------------------------------------------------
-
-async function cargarAgendaMedico(contenido) {
-  contenido.innerHTML = `
-    <h3>Agenda de citas</h3>
-    <p class="texto-suave">Cargando agenda de citas del médico...</p>
- `;
-
-  if (!medicoActual || !medicoActual.id_medico) {
-    contenido.innerHTML = `
-      <h3>Agenda de citas</h3>
-      <p class="texto-suave" style="color:#b91c1c;">
-        No se pudo identificar el médico actual (id_medico no disponible).
-      </p>
-    `;
-    return;
-  }
-
-  const idMedico = medicoActual.id_medico;
-
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/medicos/${idMedico}/citas`);
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "No se pudo obtener la agenda.");
-    }
-
-    const { futuras = [], historial = [] } = data;
-
-    let html = `
-      <h3>Agenda de citas</h3>
-      <p class="texto-suave">
-        Citas asociadas al médico <strong>${medicoActual.nombre} ${
-      medicoActual.apellido_paterno || ""
-    }</strong>.
-      </p>
-    `;
-
-    // ----- Próximas citas -----
-    html += `<h4>Próximas citas</h4>`;
-
-    if (futuras.length === 0) {
-      html += `<p class="texto-suave">No hay citas próximas registradas.</p>`;
-    } else {
-      html += `
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha y hora</th>
-              <th>Paciente</th>
-              <th>Motivo</th>
-              <th>Estado</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const c of futuras) {
-        const nombre = `${c.nombre} ${c.apellido_paterno || ""} ${
-          c.apellido_materno || ""
-        }`.trim();
-        const fechaHora = formatDateTimeDisplay(c.fecha_hora) || "-";
-
-        html += `
-          <tr>
-            <td>${fechaHora}</td>
-            <td>${nombre}</td>
-            <td>${c.motivo || "-"}</td>
-            <td>${c.estado_cita || "-"}</td>
-            <td>
-              <button class="btn-accion" data-id="${c.id_cita}" data-estado="atendida">
-                Atendida
-              </button>
-              <button class="btn-accion" data-id="${c.id_cita}" data-estado="no asistió">
-                No asistió
-              </button>
-            </td>
-          </tr>
-        `;
-      }
-
-      html += `</tbody></table>`;
-    }
-
-    // ----- Historial de citas -----
-    html += `<hr/><h4>Historial de citas</h4>`;
-
-    if (historial.length === 0) {
-      html += `<p class="texto-suave">No hay citas anteriores registradas.</p>`;
-    } else {
-      html += `
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha y hora</th>
-              <th>Paciente</th>
-              <th>Motivo</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const h of historial) {
-        const nombre = `${h.nombre} ${h.apellido_paterno || ""} ${
-          h.apellido_materno || ""
-        }`.trim();
-        const fechaHora = formatDateTimeDisplay(h.fecha_hora) || "-";
-
-        html += `
-          <tr>
-            <td>${fechaHora}</td>
-            <td>${nombre}</td>
-            <td>${h.motivo || "-"}</td>
-            <td>${h.estado_cita || "-"}</td>
-          </tr>
-        `;
-      }
-
-      html += `</tbody></table>`;
-    }
-
-    contenido.innerHTML = html;
-
-    // Eventos de acción (Atendida / No asistió)
-    contenido.querySelectorAll("button[data-estado]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const id = btn.getAttribute("data-id");
-        const nuevoEstado = btn.getAttribute("data-estado");
-
-        const confirmar = confirm(`¿Marcar cita como "${nuevoEstado}"?`);
-        if (!confirmar) return;
-
-        try {
-          const res = await fetch(`${BACKEND_URL}/api/citas/${id}/estado`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ nuevo_estado: nuevoEstado }),
-          });
-
-          const body = await res.json();
-          if (!res.ok) {
-            throw new Error(body.error || "Error al actualizar el estado.");
-          }
-
-          alert("Estado de la cita actualizado correctamente.");
-          cargarAgendaMedico(contenido); // recargar
-        } catch (err) {
-          console.error(err);
-          alert(err.message);
-        }
-      });
-    });
-  } catch (err) {
-    console.error(err);
-    contenido.innerHTML = `
-      <h3>Agenda de citas</h3>
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
-  }
-}
-
-
-// ------------------------------------------------------
-// 6) PACIENTES DEL MÉDICO + EXPEDIENTE CON PESTAÑAS
-// ------------------------------------------------------
-
-async function cargarPacientesMedico(contenido) {
-  contenido.innerHTML = `
-    <h3>Pacientes asignados</h3>
-    <p class="texto-suave">Cargando pacientes...</p>
-  `;
-
-  if (!medicoActual || !medicoActual.id_medico) {
-    contenido.innerHTML = `
-      <h3>Pacientes asignados</h3>
-      <p class="texto-suave" style="color:#b91c1c;">
-        No se encontró el id_medico del usuario actual.
-      </p>
-    `;
-    return;
-  }
-
-  try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/medicos/${medicoActual.id_medico}/pacientes`
-    );
-    const data = await res.json().catch(() => []);
-
-    if (!res.ok) {
-      throw new Error(data.error || "Error al obtener pacientes del médico.");
-    }
-
-    if (!Array.isArray(data) || data.length === 0) {
-      contenido.innerHTML = `
-        <h3>Pacientes asignados</h3>
-        <p class="texto-suave">No hay pacientes asignados a este médico.</p>
-      `;
+    if (!session.roles.includes("MEDICO")) {
+      msg.textContent = `Tu usuario no es MÉDICO. Roles: ${(session.roles || []).join(", ") || "N/A"}`;
       return;
     }
 
-    let html = `
-      <h3>Pacientes asignados</h3>
-      <table class="tabla-lista">
-        <thead>
-          <tr>
-            <th>Nombre</th>
-            <th>CURP</th>
-            <th>Fecha nac.</th>
-            <th>Sexo</th>
-            <th>Estatus</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
+    navStack = [];
+    setView("pacientes", {}, { pushHistory: false });
 
-    for (const p of data) {
-      const nombre = `${p.nombre} ${p.apellido_paterno || ""} ${
-        p.apellido_materno || ""
-      }`.trim();
-      const fechaNac = p.fecha_nacimiento
-        ? p.fecha_nacimiento.slice(0, 10)
-        : "-";
-
-      html += `
-        <tr>
-          <td>${nombre}</td>
-          <td>${p.curp || "-"}</td>
-          <td>${fechaNac}</td>
-          <td>${p.sexo || "-"}</td>
-          <td>${p.estatus_afiliacion || "-"}</td>
-          <td>
-            <button class="btn-accion btn-ver-expediente" data-idpac="${
-              p.id_paciente
-            }">
-              Ver expediente
-            </button>
-          </td>
-        </tr>
-      `;
-    }
-
-    html += `
-        </tbody>
-      </table>
-    `;
-
-    contenido.innerHTML = html;
-
-    // Abrir expediente
-    contenido.querySelectorAll("button.btn-ver-expediente").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const idPaciente = btn.getAttribute("data-idpac");
-        cargarExpedientePaciente(contenido, idPaciente);
-      });
-    });
-  } catch (error) {
-    console.error(error);
-    contenido.innerHTML = `
-      <h3>Pacientes asignados</h3>
-      <p class="texto-suave" style="color:#b91c1c;">${error.message}</p>
-    `;
+  } catch (err) {
+    msg.textContent = err.message;
   }
 }
 
-// Expediente clínico del paciente + pestañas
-async function cargarExpedientePaciente(contenido, idPaciente) {
-  contenido.innerHTML = `
-    <h3>Expediente clínico</h3>
-    <p class="texto-suave">Cargando datos del paciente...</p>
-  `;
+function logout() {
+  localStorage.removeItem("ads_session");
+  session = { usuario: null, roles: [], medico: null };
+  navStack = [];
+  setView("login", {}, { pushHistory: false });
+}
+
+function hydrateSession() {
+  const raw = localStorage.getItem("ads_session");
+  if (!raw) return;
+  try {
+    const data = JSON.parse(raw);
+    session = data;
+  } catch {
+    // ignore
+  }
+}
+
+// ------------------------------
+// Views
+// ------------------------------
+async function viewPacientes() {
+  const container = $("#ads-container");
+  container.innerHTML = "";
+
+  const card = h("section", { class: "ads-card" });
+  const hd = h("div", { class: "ads-card__hd" },
+    h("div", {},
+      h("h2", {}, "Pacientes asignados"),
+      h("div", { class: "ads-muted", id: "ads-pac-sub" }, "")
+    )
+  );
+  const bd = h("div", { class: "ads-card__bd" },
+    h("div", { class: "ads-row" },
+      h("div", { class: "ads-field", style: "flex:2; min-width:340px;" },
+        h("label", {}, "Buscar"),
+        h("input", { class: "ads-input", id: "ads-buscar", placeholder: "Buscar por nombre o CURP…" })
+      ),
+      h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: async () => { await loadPacientes(true); } }, "Actualizar lista")
+    ),
+    h("div", { style: "height:12px" }),
+    h("div", { class: "ads-tablewrap" },
+      h("table", { class: "ads-table", id: "ads-pac-table" },
+        h("thead", {},
+          h("tr", {},
+            h("th", {}, "Nombre"),
+            h("th", {}, "CURP"),
+            h("th", {}, "Fecha nac."),
+            h("th", {}, "Sexo"),
+            h("th", {}, "Estatus"),
+            h("th", {}, "Triage"),
+            h("th", {}, "")
+          )
+        ),
+        h("tbody", { id: "ads-pac-tbody" })
+      )
+    )
+  );
+
+  card.appendChild(hd);
+  card.appendChild(bd);
+  container.appendChild(card);
+
+  await loadPacientes(false);
+
+  const input = $("#ads-buscar");
+  input.addEventListener("input", () => renderPacientesTable(input.value));
+}
+
+async function loadPacientes(force) {
+  if (!session.medico?.id_medico) {
+    showToast("No hay médico en sesión.", "error");
+    return;
+  }
+
+  if (!force && cachePacientes.length) {
+    renderPacientesTable($("#ads-buscar")?.value || "");
+    $("#ads-pac-sub").textContent = `Mostrando ${cachePacientes.length} de ${cachePacientes.length}`;
+    return;
+  }
 
   try {
-    const resResumen = await fetch(
-      `${BACKEND_URL}/api/pacientes/${idPaciente}/resumen-expediente`
+    const data = await api(`/api/medicos/${session.medico.id_medico}/pacientes`);
+    cachePacientes = Array.isArray(data) ? data : [];
+    renderPacientesTable($("#ads-buscar")?.value || "");
+    $("#ads-pac-sub").textContent = `Mostrando ${cachePacientes.length} de ${cachePacientes.length}`;
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+function triagePill(triage) {
+  const t = (triage || "").toLowerCase();
+  if (t.includes("verde")) return h("span", { class: "ads-pill ads-pill--ok" }, "Verde");
+  if (t.includes("amar")) return h("span", { class: "ads-pill ads-pill--warn" }, "Amarillo");
+  if (t.includes("rojo")) return h("span", { class: "ads-pill ads-pill--bad" }, "Rojo");
+  return h("span", { class: "ads-pill" }, triage || "-");
+}
+
+function renderPacientesTable(q) {
+  const tbody = $("#ads-pac-tbody");
+  if (!tbody) return;
+
+  const query = (q || "").trim().toLowerCase();
+  const rows = !query
+    ? cachePacientes
+    : cachePacientes.filter((p) => {
+        const nombre = `${p.nombre || ""} ${p.apellido_paterno || ""} ${p.apellido_materno || ""}`.toLowerCase();
+        const curp = (p.curp || "").toLowerCase();
+        return nombre.includes(query) || curp.includes(query);
+      });
+
+  $("#ads-pac-sub").textContent = `Mostrando ${rows.length} de ${cachePacientes.length}`;
+
+  tbody.innerHTML = "";
+  for (const p of rows) {
+    const nombre = `${p.nombre || ""} ${p.apellido_paterno || ""} ${p.apellido_materno || ""}`.trim();
+    tbody.appendChild(
+      h("tr", {},
+        h("td", {}, nombre),
+        h("td", {}, p.curp || "-"),
+        h("td", {}, (p.fecha_nacimiento || "").slice(0,10)),
+        h("td", {}, p.sexo || "-"),
+        h("td", {}, p.estatus_afiliacion || "-"),
+        h("td", {}, triagePill(p.triage)),
+        h("td", {},
+          h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => openExpediente(p.id_paciente) }, "Ver expediente")
+        )
+      )
     );
-    const resumen = await resResumen.json();
+  }
+}
 
-    if (!resResumen.ok) {
-      throw new Error(resumen.error || "Error al obtener el expediente.");
-    }
-
-    const { paciente, expediente } = resumen;
-
-    const nombrePaciente = `${paciente.nombre} ${
-      paciente.apellido_paterno || ""
-    } ${paciente.apellido_materno || ""}`.trim();
-
-    let html = `
-      <h3>Pacientes</h3>
-
-      <p class="texto-suave">
-        Resumen de expediente del paciente seleccionado.
-      </p>
-
-      <div class="cuadro-resumen">
-        <p><strong>Paciente:</strong> ${nombrePaciente}</p>
-        <p><strong>CURP:</strong> ${paciente.curp || "No registrada"}</p>
-        <p><strong>Sexo:</strong> ${paciente.sexo || "-"}</p>
-        <p><strong>Teléfono:</strong> ${paciente.telefono || "-"}</p>
-        <p><strong>Correo:</strong> ${paciente.correo || "-"}</p>
-        <p><strong>Estatus afiliación:</strong> ${
-          paciente.estatus_afiliacion || "-"
-        }</p>
-        <hr/>
-    `;
-
-    if (!expediente) {
-      html += `
-        <p class="texto-suave" style="color:#b91c1c;">
-          Este paciente aún no tiene expediente clínico registrado.
-        </p>
-      </div>`;
-      contenido.innerHTML = html;
+async function openExpediente(id_paciente) {
+  try {
+    const data = await api(`/api/pacientes/${id_paciente}/resumen-expediente`);
+    const expediente = data.expediente;
+    if (!expediente?.id_expediente) {
+      showToast("Este paciente no tiene expediente.", "error");
       return;
     }
-
-    const fechaApertura = expediente.fecha_apertura
-      ? expediente.fecha_apertura.slice(0, 10)
-      : "-";
-    const ultimaAct = expediente.fecha_ultima_actualizacion
-      ? expediente.fecha_ultima_actualizacion
-          .toString()
-          .slice(0, 19)
-          .replace("T", " ")
-      : "-";
-
-    html += `
-        <p><strong>ID expediente:</strong> ${expediente.id_expediente}</p>
-        <p><strong>Fecha de apertura:</strong> ${fechaApertura}</p>
-        <p><strong>Estado:</strong> ${expediente.estado_expediente || "-"}</p>
-        <p><strong>Última actualización:</strong> ${ultimaAct}</p>
-        <p><strong>Observaciones:</strong> ${
-          expediente.observaciones || "Sin observaciones registradas."
-        }</p>
-      </div>
-
-      <!-- Pestañas del expediente -->
-      <div class="tabs-expediente" style="margin-top:1rem; border-bottom:1px solid #e5e7eb;">
-        <button class="tab-exp active" data-tab="notas">Notas de evolución</button>
-        <button class="tab-exp" data-tab="recetas">Recetas médicas</button>
-        <button class="tab-exp" data-tab="ordenes">Órdenes de laboratorio</button>
-        <button class="tab-exp" data-tab="resultados">Resultados de laboratorio</button>
-      </div>
-
-      <div id="contenido-expediente" style="margin-top:1rem;"></div>
-    `;
-
-    contenido.innerHTML = html;
-
-    const contExp = contenido.querySelector("#contenido-expediente");
-
-    const cargarNotasTab = () =>
-      cargarNotasEvolucion(contExp, expediente.id_expediente);
-    const cargarRecetasTab = () =>
-      cargarRecetasExpediente(contExp, expediente.id_expediente);
-    const cargarOrdenesTab = () =>
-      cargarOrdenesExpediente(contExp, expediente.id_expediente);
-    const cargarResultadosTab = () =>
-      cargarResultadosExpediente(contExp, expediente.id_expediente);
-
-    // Listeners de pestañas
-    contenido.querySelectorAll(".tab-exp").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        contenido
-          .querySelectorAll(".tab-exp")
-          .forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-
-        const tab = btn.getAttribute("data-tab");
-        if (tab === "notas") cargarNotasTab();
-        if (tab === "recetas") cargarRecetasTab();
-        if (tab === "ordenes") cargarOrdenesTab();
-        if (tab === "resultados") cargarResultadosTab();
-      });
-    });
-
-    // Cargar pestaña inicial
-    cargarNotasTab();
+    setView("expediente", { paciente: data.paciente, expediente }, { pushHistory: true });
   } catch (err) {
-    console.error(err);
-    contenido.innerHTML = `
-      <h3>Expediente clínico</h3>
-      <p class="texto-suave" style="color:#b91c1c;">${err.message}</p>
-    `;
+    showToast(err.message, "error");
   }
 }
 
+function viewExpediente({ paciente, expediente }) {
+  const container = $("#ads-container");
+  container.innerHTML = "";
 
-// ------------------------------------------------------
-// 7) PESTAÑA: NOTAS DE EVOLUCIÓN
-// ------------------------------------------------------
+  const nombre = `${paciente.nombre || ""} ${paciente.apellido_paterno || ""} ${paciente.apellido_materno || ""}`.trim();
 
-async function cargarNotasEvolucion(contenedor, idExpediente) {
-  contenedor.innerHTML = `<p class="texto-suave">Cargando notas de evolución...</p>`;
+  const headerCard = h("section", { class: "ads-card" },
+    h("div", { class: "ads-card__hd" },
+      h("div", {},
+        h("h2", {}, "Expediente clínico"),
+        h("div", { class: "ads-muted" }, `Paciente: ${nombre} • CURP: ${paciente.curp || "-"}`)
+      ),
+      h("div", { class: "ads-row", style: "justify-content:flex-end" },
+        triagePill(paciente.triage),
+        h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => goBack() }, "Volver")
+      )
+    ),
+    h("div", { class: "ads-card__bd" },
+      h("div", { class: "ads-row" },
+        infoBox("Teléfono", paciente.telefono || "-"),
+        infoBox("Correo", paciente.correo || "-"),
+        infoBox("Estatus", paciente.estatus_afiliacion || "-"),
+        infoBox("ID expediente", String(expediente.id_expediente)),
+        infoBox("Estado", expediente.estado_expediente || "-"),
+        infoBox("Últ. actualización", fmtDateTime(expediente.fecha_ultima_actualizacion))
+      )
+    )
+  );
+
+  const tabsCard = h("section", { class: "ads-card" });
+  const hd = h("div", { class: "ads-card__hd" },
+    h("h3", {}, "Secciones"),
+    h("div", { class: "ads-muted" }, "Notas, recetas y laboratorio del expediente")
+  );
+
+  const subtabs = h("div", { class: "ads-subtabs", id: "ads-exp-subtabs" },
+    subtabBtn("exp-notas", "Notas de evolución"),
+    subtabBtn("exp-recetas", "Recetas médicas"),
+    subtabBtn("exp-ordenes", "Órdenes de laboratorio"),
+    subtabBtn("exp-resultados", "Resultados de laboratorio")
+  );
+
+  const body = h("div", { class: "ads-card__bd" },
+    subtabs,
+    h("div", { style: "height:14px" }),
+    h("div", { id: "ads-exp-panel" }, "")
+  );
+
+  tabsCard.appendChild(hd);
+  tabsCard.appendChild(body);
+
+  container.appendChild(headerCard);
+  container.appendChild(tabsCard);
+
+  // default tab
+  setExpSubtab("exp-notas", { paciente, expediente });
+}
+
+function infoBox(label, value) {
+  return h("div", { class: "ads-field", style: "min-width:200px; flex:1;" },
+    h("label", {}, label),
+    h("div", { class: "ads-input", style: "background:#f8fafc;" }, value)
+  );
+}
+
+function subtabBtn(key, label) {
+  const b = h("button", { class: "ads-subtab", type: "button", onclick: () => setExpSubtab(key, currentView.params) }, label);
+  b.dataset.key = key;
+  return b;
+}
+
+function setExpSubtab(key, params) {
+  const all = document.querySelectorAll(".ads-subtab");
+  all.forEach((b) => b.classList.toggle("is-active", b.dataset.key === key));
+  const panel = $("#ads-exp-panel");
+  if (!panel) return;
+
+  if (key === "exp-notas") return renderNotasExpediente(panel, params);
+  if (key === "exp-recetas") return renderRecetasExpediente(panel, params);
+  if (key === "exp-ordenes") return renderOrdenesExpediente(panel, params);
+  if (key === "exp-resultados") return renderResultadosExpediente(panel, params);
+}
+
+async function renderNotasExpediente(panel, { expediente }) {
+  panel.innerHTML = "";
+
+  const form = h("div", { class: "ads-card", style: "box-shadow:none;" },
+    h("div", { class: "ads-card__bd" },
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "flex:3; min-width:360px;" },
+          h("label", {}, "Nueva nota"),
+          h("textarea", { class: "ads-textarea", id: "ads-new-note", placeholder: "Escribe la nota de evolución…" })
+        ),
+        h("button", { class: "ads-btn", type: "button", onclick: () => crearNota(expediente.id_expediente) }, "Guardar nota")
+      )
+    )
+  );
+
+  const list = h("div", { id: "ads-notas-list", style: "display:flex; flex-direction:column; gap:12px;" });
+
+  panel.appendChild(form);
+  panel.appendChild(h("div", { style: "height:12px" }));
+  panel.appendChild(list);
+
+  await cargarNotas(expediente.id_expediente);
+}
+
+async function cargarNotas(id_expediente) {
+  const list = $("#ads-notas-list");
+  if (!list) return;
+  list.innerHTML = h("div", { class: "ads-muted" }, "Cargando notas…").outerHTML;
 
   try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/expedientes/${idExpediente}/notas`
-    );
-    const notas = await res.json().catch(() => []);
-
-    if (!res.ok) {
-      throw new Error(notas.error || "Error al obtener notas de evolución.");
-    }
-
-    let html = `
-      <h4>Notas de evolución</h4>
-      <div class="bloque-form">
-        <textarea id="txtNotaEvolucion" rows="3"
-          placeholder="Escribe la nueva nota clínica..."></textarea>
-        <button id="btnGuardarNota" class="btn-primario">Guardar nota</button>
-      </div>
-    `;
+    const notas = await api(`/api/expedientes/${id_expediente}/notas`);
+    list.innerHTML = "";
 
     if (!Array.isArray(notas) || notas.length === 0) {
-      html += `<p class="texto-suave">No hay notas registradas.</p>`;
-    } else {
-      html += `
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha y hora</th>
-              <th>Tipo</th>
-              <th>Contenido</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const n of notas) {
-        const fecha = n.fecha_hora
-          ? formatDateTimeDisplay(n.fecha_hora) || "-"
-          : "-";
-
-        html += `
-          <tr>
-            <td>${fecha}</td>
-            <td>${n.tipo_nota || "-"}</td>
-            <td>${n.contenido}</td>
-          </tr>
-        `;
-      }
-
-      html += `</tbody></table>`;
+      list.appendChild(h("div", { class: "ads-muted" }, "No hay notas registradas."));
+      return;
     }
 
-    contenedor.innerHTML = html;
-
-    // Guardar nueva nota
-    contenedor
-      .querySelector("#btnGuardarNota")
-      .addEventListener("click", async () => {
-        const texto = contenedor
-          .querySelector("#txtNotaEvolucion")
-          .value.trim();
-        if (!texto) {
-          alert("Escribe el contenido de la nota.");
-          return;
-        }
-
-        try {
-          const resIns = await fetch(
-            `${BACKEND_URL}/api/expedientes/${idExpediente}/notas`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                id_medico: medicoActual.id_medico,
-                tipo_nota: "evolucion",
-                contenido: texto,
-              }),
-            }
-          );
-          const body = await resIns.json().catch(() => ({}));
-          if (!resIns.ok) {
-            throw new Error(body.error || "No se pudo guardar la nota.");
-          }
-          cargarNotasEvolucion(contenedor, idExpediente); // recarga
-        } catch (err) {
-          console.error(err);
-          alert(err.message);
-        }
-      });
+    for (const n of notas) {
+      list.appendChild(noteCard(n, id_expediente));
+    }
   } catch (err) {
-    console.error(err);
-    contenedor.innerHTML = `
-      <p class="texto-suave" style="color:#b91c1c;">${err.message}</p>
-    `;
+    list.innerHTML = "";
+    list.appendChild(h("div", { class: "ads-muted" }, `Error: ${err.message}`));
   }
 }
 
+function noteCard(nota, id_expediente) {
+  const hd = h("div", { class: "ads-note__hd" },
+    h("div", {},
+      h("div", { style: "font-weight:900" }, `Nota #${nota.id_nota}`),
+      h("div", { class: "ads-note__meta" }, `${fmtDateTime(nota.fecha_hora)} • ${nota.tipo_nota || "evolución"}`)
+    ),
+    h("div", { class: "ads-note__actions" },
+      h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => abrirEditorNota(nota, id_expediente) }, "Editar"),
+      h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => verHistorialNota(nota.id_nota) }, "Historial")
+    )
+  );
 
-// ------------------------------------------------------
-// 8) PESTAÑA: RECETAS MÉDICAS (EXPEDIENTE)
-// ------------------------------------------------------
+  return h("div", { class: "ads-note" },
+    hd,
+    h("div", { class: "ads-note__body" }, nota.contenido || "")
+  );
+}
 
-async function cargarRecetasExpediente(contenedor, idExpediente) {
-  contenedor.innerHTML = `<p class="texto-suave">Cargando recetas médicas...</p>`;
-
+async function crearNota(id_expediente) {
+  const txt = $("#ads-new-note");
+  const contenido = (txt?.value || "").trim();
+  if (!contenido) {
+    showToast("Escribe el contenido de la nota.", "error");
+    return;
+  }
   try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/expedientes/${idExpediente}/recetas`
-    );
-    const recetas = await res.json().catch(() => []);
-
-    if (!res.ok) {
-      throw new Error(recetas.error || "Error al obtener recetas médicas.");
-    }
-
-    let html = `
-      <h4>Recetas médicas</h4>
-      <div class="bloque-form">
-        <input
-          type="text"
-          id="txtDescripcionReceta"
-          placeholder="Descripción breve de la receta (opcional)"
-        />
-        <input
-          type="file"
-          id="fileReceta"
-          accept=".pdf,.doc,.docx,.docm,.jpg,.jpeg,.png"
-        />
-        <button id="btnSubirReceta" class="btn-primario">
-          Guardar receta
-        </button>
-      </div>
-    `;
-
-    if (!Array.isArray(recetas) || recetas.length === 0) {
-      html += `<p class="texto-suave">No hay recetas registradas.</p>`;
-    } else {
-      html += `
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Descripción</th>
-              <th>Archivo</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const r of recetas) {
-        const fecha = r.fecha_receta
-          ? new Date(r.fecha_receta).toLocaleString("es-MX", {
-              year: "numeric",
-              month: "2-digit",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "-";
-
-        const descripcion = r.descripcion || "-";
-
-        let colArchivo = "Sin archivo";
-        if (r.archivo_ruta) {
-          const nombre = r.archivo_nombre_original || "Ver archivo";
-          colArchivo = `
-            <button
-              class="btn-accion btn-ver-receta"
-              data-archivo="${r.archivo_ruta}"
-            >
-              ${nombre}
-            </button>
-          `;
-        }
-
-        html += `
-          <tr>
-            <td>${fecha}</td>
-            <td>${descripcion}</td>
-            <td>${colArchivo}</td>
-          </tr>
-        `;
-      }
-
-      html += `</tbody></table>`;
-    }
-
-    contenedor.innerHTML = html;
-
-    // Guardar nueva receta (archivo + descripción)
-    const btnSubir = contenedor.querySelector("#btnSubirReceta");
-    if (btnSubir) {
-      btnSubir.addEventListener("click", async () => {
-        const inputDesc = contenedor.querySelector("#txtDescripcionReceta");
-        const inputFile = contenedor.querySelector("#fileReceta");
-
-        const descripcion = (inputDesc?.value || "").trim();
-        const archivo = inputFile?.files[0];
-
-        if (!archivo) {
-          alert("Selecciona un archivo de receta (PDF, Word, imagen, etc.).");
-          return;
-        }
-
-        const formData = new FormData();
-        formData.append("id_medico", medicoActual.id_medico);
-        formData.append("descripcion", descripcion);
-        formData.append("archivo", archivo);
-
-        try {
-          // Ruta alineada con el backend reorganizado:
-          // POST /api/expedientes/:id_expediente/recetas
-          const resUp = await fetch(
-            `${BACKEND_URL}/api/expedientes/${idExpediente}/recetas`,
-            {
-              method: "POST",
-              body: formData,
-            }
-          );
-
-          const body = await resUp.json().catch(() => ({}));
-          if (!resUp.ok) {
-            throw new Error(body.error || "No se pudo guardar la receta.");
-          }
-
-          if (inputDesc) inputDesc.value = "";
-          if (inputFile) inputFile.value = "";
-
-          await cargarRecetasExpediente(contenedor, idExpediente);
-          alert("Receta registrada correctamente.");
-        } catch (err) {
-          console.error(err);
-          alert(err.message);
-        }
-      });
-    }
-
-    // Ver archivo de receta
-    contenedor.querySelectorAll("button.btn-ver-receta").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const rutaRelativa = btn.getAttribute("data-archivo");
-        if (!rutaRelativa) {
-          alert("No se encontró la ruta del archivo.");
-          return;
-        }
-        window.electronAPI.verArchivoReceta(rutaRelativa);
-      });
+    await api(`/api/expedientes/${id_expediente}/notas`, {
+      method: "POST",
+      body: JSON.stringify({
+        id_medico: session.medico?.id_medico,
+        tipo_nota: "evolucion",
+        contenido,
+      }),
     });
+    txt.value = "";
+    showToast("Nota guardada.", "ok");
+    await cargarNotas(id_expediente);
   } catch (err) {
-    console.error(err);
-    contenedor.innerHTML = `
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
+    showToast(err.message, "error");
   }
 }
 
+function modal(title, contentEl, { width = 720 } = {}) {
+  const overlay = h("div", { style: `position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:1500;padding:18px;` });
+  const box = h("div", { class: "ads-card", style: `width:min(${width}px, 96vw); max-height: 92vh; overflow:auto;` });
+  box.appendChild(
+    h("div", { class: "ads-card__hd" },
+      h("h3", {}, title),
+      h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => overlay.remove() }, "Cerrar")
+    )
+  );
+  box.appendChild(h("div", { class: "ads-card__bd" }, contentEl));
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  return overlay;
+}
 
-// ------------------------------------------------------
-// 9) PESTAÑA: ÓRDENES DE LABORATORIO (EXPEDIENTE)
-// ------------------------------------------------------
+function abrirEditorNota(nota, id_expediente) {
+  const area = h("textarea", { class: "ads-textarea" }, nota.contenido || "");
+  const actions = h("div", { class: "ads-row", style: "justify-content:flex-end" },
+    h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => overlay.remove() }, "Cancelar"),
+    h("button", { class: "ads-btn", type: "button", onclick: async () => {
+      const nuevo = area.value.trim();
+      if (!nuevo) { showToast("La nota no puede quedar vacía.", "error"); return; }
+      try {
+        // Backend esperado: PUT /api/notas/:id_nota  { id_medico, contenido_nuevo }
+        await api(`/api/notas/${nota.id_nota}`, {
+          method: "PUT",
+          body: JSON.stringify({ id_medico: session.medico?.id_medico, contenido_nuevo: nuevo }),
+        });
+        showToast("Nota actualizada.", "ok");
+        overlay.remove();
+        await cargarNotas(id_expediente);
+      } catch (err) {
+        showToast(err.message + " (Si esto falla, revisa que tu backend tenga la ruta PUT /api/notas/:id_nota)", "error");
+      }
+    } }, "Guardar cambios")
+  );
 
-async function cargarOrdenesExpediente(contenedor, idExpediente) {
-  contenedor.innerHTML = `<p class="texto-suave">Cargando órdenes de laboratorio...</p>`;
+  const content = h("div", {},
+    h("div", { class: "ads-muted", style: "margin-bottom:10px" }, `Editando Nota #${nota.id_nota}`),
+    area,
+    h("div", { style: "height:12px" }),
+    actions
+  );
+
+  const overlay = modal("Editar nota", content, { width: 820 });
+}
+
+async function verHistorialNota(id_nota) {
+  const wrap = h("div", {}, h("div", { class: "ads-muted" }, "Cargando historial…"));
+  const overlay = modal("Historial de cambios", wrap, { width: 920 });
 
   try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/expedientes/${idExpediente}/ordenes-laboratorio`
-    );
-    const ordenes = await res.json().catch(() => []);
+    // Backend esperado: GET /api/notas/:id_nota/historial
+    const hist = await api(`/api/notas/${id_nota}/historial`);
+    wrap.innerHTML = "";
 
-    if (!res.ok) {
-      throw new Error(
-        ordenes.error || "Error al obtener órdenes de laboratorio."
+    if (!Array.isArray(hist) || hist.length === 0) {
+      wrap.appendChild(h("div", { class: "ads-muted" }, "Esta nota no tiene modificaciones registradas."));
+      return;
+    }
+
+    for (const it of hist) {
+      wrap.appendChild(
+        h("div", { class: "ads-note", style: "margin-bottom:12px" },
+          h("div", { class: "ads-note__hd" },
+            h("div", {},
+              h("div", { style: "font-weight:900" }, fmtDateTime(it.fecha_cambio || it.fecha_hora || it.created_at)),
+              h("div", { class: "ads-note__meta" }, `Médico: ${it.id_medico || "-"}`)
+            )
+          ),
+          h("div", { class: "ads-note__body" },
+            h("div", { class: "ads-muted", style: "font-weight:800" }, "Antes:"),
+            h("div", { style: "white-space:pre-wrap" }, it.contenido_anterior || "-"),
+            h("div", { style: "height:10px" }),
+            h("div", { class: "ads-muted", style: "font-weight:800" }, "Después:"),
+            h("div", { style: "white-space:pre-wrap" }, it.contenido_nuevo || "-")
+          )
+        )
+      );
+    }
+  } catch (err) {
+    wrap.innerHTML = "";
+    wrap.appendChild(h("div", { class: "ads-muted" }, err.message + " (Si esto falla, revisa que tu backend tenga GET /api/notas/:id_nota/historial)"));
+  }
+}
+
+// ------------------------------
+// Recetas / Órdenes / Resultados (expediente)
+// ------------------------------
+async function renderRecetasExpediente(panel, { expediente, paciente }) {
+  panel.innerHTML = "";
+
+  const list = h("div", { id: "ads-rec-list", class: "ads-tablewrap" });
+  panel.appendChild(
+    h("div", { class: "ads-row" },
+      h("div", { class: "ads-field", style: "flex:2" },
+        h("label", {}, "Nueva receta (opcional archivo)"),
+        h("div", { class: "ads-muted" }, "Puedes adjuntar PDF/imagen. Si no, deja vacío.")
+      )
+    )
+  );
+
+  const form = h("form", { id: "ads-rec-form" },
+    h("div", { class: "ads-row" },
+      h("div", { class: "ads-field", style: "flex:2; min-width:280px" },
+        h("label", {}, "Descripción"),
+        h("input", { class: "ads-input", name: "descripcion", placeholder: "Receta…" })
+      ),
+      h("div", { class: "ads-field", style: "flex:2; min-width:280px" },
+        h("label", {}, "Medicamentos"),
+        h("input", { class: "ads-input", name: "medicamentos", placeholder: "Paracetamol 500mg…" })
+      )
+    ),
+    h("div", { class: "ads-row" },
+      h("div", { class: "ads-field", style: "flex:3; min-width:360px" },
+        h("label", {}, "Indicaciones"),
+        h("textarea", { class: "ads-textarea", name: "indicaciones", placeholder: "Tomar cada…" })
+      ),
+      h("div", { class: "ads-field" },
+        h("label", {}, "Archivo"),
+        h("input", { class: "ads-input", type: "file", name: "archivo" })
+      ),
+      h("button", { class: "ads-btn", type: "submit" }, "Guardar receta")
+    )
+  );
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const fd = new FormData(form);
+      fd.append("id_medico", String(session.medico?.id_medico || ""));
+
+      const res = await fetch(`${BACKEND_URL}/api/expedientes/${expediente.id_expediente}/recetas`, {
+        method: "POST",
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar la receta.");
+
+      showToast("Receta guardada.", "ok");
+      form.reset();
+      await cargarRecetas(expediente.id_expediente);
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+
+  panel.appendChild(form);
+  panel.appendChild(h("div", { style: "height:12px" }));
+  panel.appendChild(h("div", { id: "ads-rec-table" }));
+
+  await cargarRecetas(expediente.id_expediente);
+}
+
+async function cargarRecetas(id_expediente) {
+  const host = $("#ads-rec-table");
+  if (!host) return;
+  host.innerHTML = h("div", { class: "ads-muted" }, "Cargando recetas…").outerHTML;
+
+  try {
+    const rows = await api(`/api/expedientes/${id_expediente}/recetas`);
+    host.innerHTML = "";
+
+    const wrap = h("div", { class: "ads-tablewrap" });
+    const table = h("table", { class: "ads-table" },
+      h("thead", {},
+        h("tr", {},
+          h("th", {}, "Fecha"),
+          h("th", {}, "Descripción"),
+          h("th", {}, "Medicamentos"),
+          h("th", {}, "Vigencia"),
+          h("th", {}, "Archivo")
+        )
+      ),
+      h("tbody", {})
+    );
+    const tb = table.querySelector("tbody");
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      host.appendChild(h("div", { class: "ads-muted" }, "No hay recetas registradas."));
+      return;
+    }
+
+    for (const r of rows) {
+      const archivo = r.archivo_ruta
+        ? h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => window.electronAPI?.abrirArchivoReceta?.(r.archivo_ruta) }, "Abrir")
+        : h("span", { class: "ads-muted" }, "-");
+
+      tb.appendChild(
+        h("tr", {},
+          h("td", {}, fmtDateTime(r.fecha_receta)),
+          h("td", {}, r.descripcion || "-"),
+          h("td", {}, r.medicamentos || "-"),
+          h("td", {}, r.fecha_vigencia ? fmtDateTime(r.fecha_vigencia) : "-"),
+          h("td", {}, archivo)
+        )
       );
     }
 
-    let html = `
-      <h4>Órdenes de laboratorio</h4>
-      <div class="bloque-form">
-        <textarea id="txtObsOrden" rows="3"
-          placeholder="Estudios solicitados y observaciones (ej. BH, QS, EGO)..."></textarea>
-        <button id="btnGuardarOrden" class="btn-primario">Registrar orden</button>
-      </div>
-    `;
-
-    if (!Array.isArray(ordenes) || ordenes.length === 0) {
-      html += `<p class="texto-suave">No hay órdenes registradas.</p>`;
-    } else {
-      html += `
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha solicitud</th>
-              <th>ID orden</th>
-              <th>Estado</th>
-              <th>Observaciones</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const o of ordenes) {
-        const fecha = o.fecha_solicitud
-          ? formatDateTimeDisplay(o.fecha_solicitud) || "-"
-          : "-";
-
-        const estado = o.estado_orden || "-";
-        const claseFila = esEstadoResultadoListo(estado)
-          ? "orden-con-resultado"
-          : "";
-
-        html += `
-          <tr class="${claseFila}">
-            <td>${fecha}</td>
-            <td>${o.id_orden || "-"}</td>
-            <td>${estado}</td>
-            <td>${o.observaciones || "-"}</td>
-          </tr>
-        `;
-      }
-
-      html += `</tbody></table>`;
-    }
-
-    contenedor.innerHTML = html;
-
-    // Registrar nueva orden
-    contenedor
-      .querySelector("#btnGuardarOrden")
-      .addEventListener("click", async () => {
-        const obs = contenedor.querySelector("#txtObsOrden").value.trim();
-
-        try {
-          const resIns = await fetch(
-            `${BACKEND_URL}/api/expedientes/${idExpediente}/ordenes-laboratorio`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                id_medico: medicoActual.id_medico,
-                observaciones: obs || null,
-              }),
-            }
-          );
-          const body = await resIns.json().catch(() => ({}));
-          if (!resIns.ok) {
-            throw new Error(
-              body.error || "No se pudo registrar la orden."
-            );
-          }
-          cargarOrdenesExpediente(contenedor, idExpediente);
-        } catch (err) {
-          console.error(err);
-          alert(err.message);
-        }
-      });
+    wrap.appendChild(table);
+    host.appendChild(wrap);
   } catch (err) {
-    console.error(err);
-    contenedor.innerHTML = `
-      <p class="texto-suave" style="color:#b91c1c;">${err.message}</p>
-    `;
+    host.innerHTML = "";
+    host.appendChild(h("div", { class: "ads-muted" }, `Error: ${err.message}`));
   }
 }
 
+async function renderOrdenesExpediente(panel, { expediente }) {
+  panel.innerHTML = "";
 
-// ------------------------------------------------------
-// 10) PESTAÑA: RESULTADOS DE LABORATORIO (EXPEDIENTE)
-// ------------------------------------------------------
+  const form = h("div", { class: "ads-row" },
+    h("div", { class: "ads-field", style: "flex:3; min-width:360px" },
+      h("label", {}, "Nueva orden"),
+      h("input", { class: "ads-input", id: "ads-ord-obs", placeholder: "Observaciones / estudios…" })
+    ),
+    h("button", { class: "ads-btn", type: "button", onclick: () => crearOrden(expediente.id_expediente) }, "Generar orden")
+  );
 
-async function cargarResultadosExpediente(contenedor, idExpediente) {
-  contenedor.innerHTML = `<p class="texto-suave">Cargando resultados de laboratorio...</p>`;
+  panel.appendChild(form);
+  panel.appendChild(h("div", { style: "height:12px" }));
+  panel.appendChild(h("div", { id: "ads-ord-table" }));
+
+  await cargarOrdenes(expediente.id_expediente);
+}
+
+async function crearOrden(id_expediente) {
+  const obs = $("#ads-ord-obs");
+  const observaciones = (obs?.value || "").trim();
+  if (!observaciones) {
+    showToast("Escribe observaciones para la orden.", "error");
+    return;
+  }
+  try {
+    await api(`/api/expedientes/${id_expediente}/ordenes-laboratorio`, {
+      method: "POST",
+      body: JSON.stringify({ id_medico: session.medico?.id_medico, observaciones }),
+    });
+    obs.value = "";
+    showToast("Orden creada.", "ok");
+    await cargarOrdenes(id_expediente);
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function cargarOrdenes(id_expediente) {
+  const host = $("#ads-ord-table");
+  if (!host) return;
+  host.innerHTML = h("div", { class: "ads-muted" }, "Cargando órdenes…").outerHTML;
 
   try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/expedientes/${idExpediente}/resultados-laboratorio`
+    const rows = await api(`/api/expedientes/${id_expediente}/ordenes-laboratorio`);
+    host.innerHTML = "";
+
+    const wrap = h("div", { class: "ads-tablewrap" });
+    const table = h("table", { class: "ads-table" },
+      h("thead", {},
+        h("tr", {},
+          h("th", {}, "Fecha"),
+          h("th", {}, "ID"),
+          h("th", {}, "Estado"),
+          h("th", {}, "Observaciones")
+        )
+      ),
+      h("tbody", {})
     );
-    const resultados = await res.json().catch(() => []);
 
-    if (!res.ok) {
-      throw new Error(resultados.error || "Error al obtener resultados.");
+    const tb = table.querySelector("tbody");
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      host.appendChild(h("div", { class: "ads-muted" }, "No hay órdenes registradas."));
+      return;
     }
 
-    let html = `<h4>Resultados de laboratorio</h4>`;
-
-    if (!Array.isArray(resultados) || resultados.length === 0) {
-      html += `<p class="texto-suave">No hay resultados registrados para este expediente.</p>`;
-    } else {
-      html += `
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>ID orden</th>
-              <th>Fecha</th>
-              <th>Estudio</th>
-              <th>Archivo</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const r of resultados) {
-        const fecha = formatDateTimeDisplay(r.fecha_resultado) || "-";
-
-        let colArchivo = "Sin archivo";
-        if (r.archivo_ruta) {
-          const nombre = r.archivo_nombre_original || "Ver archivo";
-          colArchivo = `
-            <button
-              class="btn-accion btn-ver-resultado"
-              data-archivo="${r.archivo_ruta}">
-              ${nombre}
-            </button>
-          `;
-        }
-
-        html += `
-          <tr>
-            <td>${r.id_orden || "-"}</td>
-            <td>${fecha}</td>
-            <td>${r.nombre_estudio || "-"}</td>
-            <td>${colArchivo}</td>
-          </tr>
-        `;
-      }
-
-      html += `</tbody></table>`;
+    for (const o of rows) {
+      tb.appendChild(
+        h("tr", {},
+          h("td", {}, fmtDateTime(o.fecha_solicitud)),
+          h("td", {}, String(o.id_orden || "-")),
+          h("td", {}, o.estado_orden || "-"),
+          h("td", {}, o.observaciones || "-")
+        )
+      );
     }
 
-    contenedor.innerHTML = html;
-
-    // Abrir archivo usando el mismo mecanismo que las recetas
-    contenedor.querySelectorAll("button.btn-ver-resultado").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const rutaRelativa = btn.getAttribute("data-archivo");
-        if (!rutaRelativa) {
-          alert("No se encontró la ruta del archivo.");
-          return;
-        }
-        window.electronAPI.verArchivoReceta(rutaRelativa);
-      });
-    });
+    wrap.appendChild(table);
+    host.appendChild(wrap);
   } catch (err) {
-    console.error(err);
-    contenedor.innerHTML = `
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
+    host.innerHTML = "";
+    host.appendChild(h("div", { class: "ads-muted" }, `Error: ${err.message}`));
   }
 }
 
+async function renderResultadosExpediente(panel, { expediente }) {
+  panel.innerHTML = "";
+  panel.appendChild(h("div", { id: "ads-res-table" }, ""));
+  await cargarResultados(expediente.id_expediente);
+}
 
-// ------------------------------------------------------
-// 11) ÓRDENES DE LABORATORIO - VISTA DEL MÉDICO
-// ------------------------------------------------------
+async function cargarResultados(id_expediente) {
+  const host = $("#ads-res-table");
+  if (!host) return;
+  host.innerHTML = h("div", { class: "ads-muted" }, "Cargando resultados…").outerHTML;
 
-async function cargarOrdenesMedico(contenido) {
-  contenido.innerHTML = `
-    <h3>Órdenes de laboratorio</h3>
-    <p class="texto-suave">Cargando órdenes de laboratorio del médico...</p>
-  `;
+  try {
+    const rows = await api(`/api/expedientes/${id_expediente}/resultados-laboratorio`);
+    host.innerHTML = "";
 
-  if (!medicoActual || !medicoActual.id_medico) {
-    contenido.innerHTML = `
-      <h3>Órdenes de laboratorio</h3>
-      <p class="texto-suave" style="color:#b91c1c;">
-        No se pudo identificar el médico actual (id_medico no disponible).
-      </p>
-    `;
+    const wrap = h("div", { class: "ads-tablewrap" });
+    const table = h("table", { class: "ads-table" },
+      h("thead", {},
+        h("tr", {},
+          h("th", {}, "Orden"),
+          h("th", {}, "Fecha"),
+          h("th", {}, "Estudio"),
+          h("th", {}, "Resultado"),
+          h("th", {}, "Unidad"),
+          h("th", {}, "Referencia")
+        )
+      ),
+      h("tbody", {})
+    );
+    const tb = table.querySelector("tbody");
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      host.appendChild(h("div", { class: "ads-muted" }, "No hay resultados registrados."));
+      return;
+    }
+
+    for (const r of rows) {
+      tb.appendChild(
+        h("tr", {},
+          h("td", {}, String(r.id_orden || "-")),
+          h("td", {}, fmtDateTime(r.fecha_resultado)),
+          h("td", {}, r.nombre_estudio || "-"),
+          h("td", {}, r.resultado || "-"),
+          h("td", {}, r.unidad || "-"),
+          h("td", {}, r.valores_referencia || "-")
+        )
+      );
+    }
+
+    wrap.appendChild(table);
+    host.appendChild(wrap);
+  } catch (err) {
+    host.innerHTML = "";
+    host.appendChild(h("div", { class: "ads-muted" }, `Error: ${err.message}`));
+  }
+}
+
+// ------------------------------
+// Agenda del médico
+// ------------------------------
+async function viewAgenda() {
+  const container = $("#ads-container");
+  container.innerHTML = "";
+
+  const card = h("section", { class: "ads-card" },
+    h("div", { class: "ads-card__hd" },
+      h("div", {},
+        h("h2", {}, "Agenda de citas"),
+        h("div", { class: "ads-muted" }, "Citas futuras y atendidas/no asistió")
+      )
+    ),
+    h("div", { class: "ads-card__bd" },
+      h("div", { id: "ads-agenda" }, "")
+    )
+  );
+
+  container.appendChild(card);
+
+  try {
+    const data = await api(`/api/medicos/${session.medico.id_medico}/citas`);
+    const host = $("#ads-agenda");
+
+    const futuras = data.futuras || [];
+    const historial = data.historial || [];
+
+    host.innerHTML = "";
+
+    host.appendChild(h("h3", {}, `Próximas (${futuras.length})`));
+    host.appendChild(renderCitasTabla(futuras));
+    host.appendChild(h("div", { style: "height:14px" }));
+    host.appendChild(h("h3", {}, `Historial (${historial.length})`));
+    host.appendChild(renderCitasTabla(historial));
+
+  } catch (err) {
+    showToast(err.message, "error");
+    $("#ads-agenda").innerHTML = h("div", { class: "ads-muted" }, err.message).outerHTML;
+  }
+}
+
+function renderCitasTabla(citas) {
+  const wrap = h("div", { class: "ads-tablewrap" });
+  const table = h("table", { class: "ads-table", style: "min-width:860px" },
+    h("thead", {},
+      h("tr", {},
+        h("th", {}, "Fecha"),
+        h("th", {}, "Paciente"),
+        h("th", {}, "Motivo"),
+        h("th", {}, "Estado")
+      )
+    ),
+    h("tbody", {})
+  );
+  const tb = table.querySelector("tbody");
+
+  if (!Array.isArray(citas) || citas.length === 0) {
+    tb.appendChild(h("tr", {}, h("td", { colspan: "4", class: "ads-muted" }, "Sin registros")));
+  } else {
+    for (const c of citas) {
+      tb.appendChild(
+        h("tr", {},
+          h("td", {}, fmtDateTime(c.fecha_hora)),
+          h("td", {}, `${c.paciente_nombre || ""} ${c.paciente_apellido_paterno || ""}`.trim()),
+          h("td", {}, c.motivo || "-"),
+          h("td", {}, c.estado_cita || "-")
+        )
+      );
+    }
+  }
+
+  wrap.appendChild(table);
+  return wrap;
+}
+
+// ------------------------------
+// Vista global: Notas de evolución (NO estática)
+// ------------------------------
+async function viewNotasGlobal() {
+  const container = $("#ads-container");
+  container.innerHTML = "";
+
+  const card = h("section", { class: "ads-card" },
+    h("div", { class: "ads-card__hd" },
+      h("div", {},
+        h("h2", {}, "Notas de evolución"),
+        h("div", { class: "ads-muted" }, "Selecciona un paciente asignado y gestiona sus notas")
+      )
+    ),
+    h("div", { class: "ads-card__bd" },
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "flex:2; min-width:360px" },
+          h("label", {}, "Paciente"),
+          h("select", { class: "ads-select", id: "ads-notas-paciente" },
+            h("option", { value: "" }, "Selecciona…")
+          )
+        ),
+        h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: async () => { await loadPacientes(true); fillNotasSelect(); } }, "Actualizar")
+      ),
+      h("div", { style: "height:12px" }),
+      h("div", { id: "ads-notas-global-panel" }, h("div", { class: "ads-muted" }, "Elige un paciente para ver sus notas."))
+    )
+  );
+
+  container.appendChild(card);
+
+  await loadPacientes(false);
+  fillNotasSelect();
+
+  $("#ads-notas-paciente").addEventListener("change", async (e) => {
+    const id = e.target.value;
+    if (!id) {
+      $("#ads-notas-global-panel").innerHTML = h("div", { class: "ads-muted" }, "Elige un paciente para ver sus notas.").outerHTML;
+      return;
+    }
+    await openExpedienteFromNotas(Number(id));
+  });
+}
+
+function fillNotasSelect() {
+  const sel = $("#ads-notas-paciente");
+  if (!sel) return;
+
+  const current = sel.value;
+  sel.innerHTML = "";
+  sel.appendChild(h("option", { value: "" }, "Selecciona…"));
+  for (const p of cachePacientes) {
+    const nombre = `${p.nombre || ""} ${p.apellido_paterno || ""} ${p.apellido_materno || ""}`.trim();
+    sel.appendChild(h("option", { value: String(p.id_paciente) }, `${nombre} • ${p.curp || "-"}`));
+  }
+  sel.value = current;
+}
+
+async function openExpedienteFromNotas(id_paciente) {
+  try {
+    const data = await api(`/api/pacientes/${id_paciente}/resumen-expediente`);
+    const expediente = data.expediente;
+    if (!expediente?.id_expediente) {
+      $("#ads-notas-global-panel").innerHTML = h("div", { class: "ads-muted" }, "Este paciente no tiene expediente.").outerHTML;
+      return;
+    }
+
+    // Reusamos renderNotasExpediente pero sin cambiar de vista
+    const panel = $("#ads-notas-global-panel");
+    panel.innerHTML = "";
+
+    const sub = h("div", { class: "ads-muted", style: "margin-bottom:10px" }, `Expediente #${expediente.id_expediente}`);
+    panel.appendChild(sub);
+
+    // Panel interno similar a expediente
+    const inner = h("div", { id: "ads-exp-panel" });
+    panel.appendChild(inner);
+
+    // Render notas en ese panel
+    await renderNotasExpediente(inner, { expediente, paciente: data.paciente });
+  } catch (err) {
+    $("#ads-notas-global-panel").innerHTML = h("div", { class: "ads-muted" }, err.message).outerHTML;
+  }
+}
+
+// ------------------------------
+// Laboratorio global (listado de órdenes del médico)
+// ------------------------------
+async function viewLaboratorioGlobal() {
+  const container = $("#ads-container");
+  container.innerHTML = "";
+
+  const card = h("section", { class: "ads-card" },
+    h("div", { class: "ads-card__hd" },
+      h("div", {},
+        h("h2", {}, "Órdenes de laboratorio"),
+        h("div", { class: "ads-muted" }, "Órdenes generadas por el médico")
+      )
+    ),
+    h("div", { class: "ads-card__bd" },
+      h("div", { id: "ads-lab-global" }, h("div", { class: "ads-muted" }, "Cargando…"))
+    )
+  );
+
+  container.appendChild(card);
+
+  try {
+    // Esta vista depende de tu renderer previo. Si tu backend no tiene ruta, deja el mensaje.
+    // En versiones anteriores se listaban órdenes por médico, si no existe, se puede usar expediente.
+    const host = $("#ads-lab-global");
+    host.innerHTML = h("div", { class: "ads-muted" }, "Esta vista se consulta desde el expediente del paciente (Órdenes/Resultados)." ).outerHTML;
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+// ------------------------------
+// Render principal
+// ------------------------------
+function render() {
+  ensureShell();
+
+  const topbar = $("#ads-topbar");
+  const container = $("#ads-container");
+
+  if (currentView.name === "login") {
+    topbar.style.display = "none";
+    renderLogin();
     return;
   }
 
-  const idMedico = medicoActual.id_medico;
+  topbar.style.display = "flex";
 
-  try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/medicos/${idMedico}/ordenes-laboratorio`
-    );
-    const ordenes = await res.json().catch(() => []);
-
-    if (!res.ok) {
-      throw new Error(
-        ordenes.error || "No se pudo obtener las órdenes de laboratorio."
-      );
-    }
-
-    let html = `
-      <h3>Órdenes de laboratorio</h3>
-      <p class="texto-suave">
-        Órdenes generadas por
-        <strong>${medicoActual.nombre} ${medicoActual.apellido_paterno || ""}</strong>.
-      </p>
-    `;
-
-    if (!Array.isArray(ordenes) || ordenes.length === 0) {
-      html += `<p class="texto-suave">No hay órdenes registradas para este médico.</p>`;
-      contenido.innerHTML = html;
-      return;
-    }
-
-    html += `
-      <div class="table-wrapper">
-        <table class="tabla-lista">
-          <thead>
-            <tr>
-              <th>Fecha solicitud</th>
-              <th>ID Orden</th>
-              <th>Paciente</th>
-              <th>Estado</th>
-              <th>Observaciones</th>
-              <th>Resultados</th>
-            </tr>
-          </thead>
-          <tbody>
-    `;
-
-    for (const o of ordenes) {
-      const nombrePaciente = `${o.nombre} ${o.apellido_paterno || ""} ${
-        o.apellido_materno || ""
-      }`.trim();
-      const fecha = o.fecha_solicitud
-        ? o.fecha_solicitud.toString().replace("T", " ").slice(0, 16)
-        : "-";
-      const tieneResultados = (o.num_resultados || 0) > 0;
-
-      const estado = o.estado_orden || "-";
-      const styleEstado = esEstadoResultadoListo(estado)
-        ? 'style="color:#16a34a; font-weight:bold;"'
-        : "";
-
-      html += `
-        <tr>
-          <td>${fecha}</td>
-          <td>${o.id_orden}</td>
-          <td>${nombrePaciente}</td>
-          <td ${styleEstado}>${estado}</td>
-          <td>${o.observaciones || "-"}</td>
-          <td>
-            ${
-              tieneResultados
-                ? `<button
-                     class="btn-accion btn-ver-resultados"
-                     data-idorden="${o.id_orden}">
-                     Ver resultados (${o.num_resultados})
-                   </button>`
-                : `<span class="texto-suave">Sin resultados</span>`
-            }
-          </td>
-        </tr>
-      `;
-    }
-
-    html += `
-          </tbody>
-        </table>
-      </div>
-
-      <div id="detalle-orden" style="margin-top:1rem;">
-        <p class="texto-suave">
-          Selecciona una orden para ver sus resultados de laboratorio.
-        </p>
-      </div>
-    `;
-
-    contenido.innerHTML = html;
-
-    const detalleDiv = contenido.querySelector("#detalle-orden");
-
-    // Eventos para "Ver resultados"
-    contenido.querySelectorAll(".btn-ver-resultados").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const idOrden = btn.getAttribute("data-idorden");
-        const orden = ordenes.find(
-          (o) => String(o.id_orden) === String(idOrden)
-        );
-        if (orden) {
-          mostrarResultadosOrden(detalleDiv, orden);
-        }
-      });
-    });
-  } catch (err) {
-    console.error(err);
-    contenido.innerHTML = `
-      <h3>Órdenes de laboratorio</h3>
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
+  // Subtitulo con datos del médico
+  const sub = $("#ads-brand-sub");
+  if (session.medico) {
+    sub.textContent = `${session.medico.nombre} ${session.medico.apellido_paterno || ""} • ${session.medico.especialidad || "Sin especialidad"}`;
+  } else {
+    sub.textContent = "Módulo Médico";
   }
+
+  setActiveTab();
+
+  if (currentView.name === "pacientes") return viewPacientes();
+  if (currentView.name === "agenda") return viewAgenda();
+  if (currentView.name === "notas") return viewNotasGlobal();
+  if (currentView.name === "ordenes") return viewLaboratorioGlobal();
+  if (currentView.name === "expediente") return viewExpediente(currentView.params);
+
+  container.innerHTML = h("div", { class: "ads-muted" }, "Vista no encontrada.").outerHTML;
 }
 
-// Detalle de resultados de una orden concreta
-async function mostrarResultadosOrden(contenedor, orden) {
-  contenedor.innerHTML = `<p class="texto-suave">Cargando resultados...</p>`;
+// Init
+(function init() {
+  hydrateSession();
 
-  try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/ordenes-laboratorio/${orden.id_orden}/resultados`
-    );
-    const resultados = await res.json().catch(() => []);
-
-    if (!res.ok) {
-      throw new Error(
-        resultados.error || "Error al obtener resultados de laboratorio."
-      );
-    }
-
-    const nombrePaciente = `${orden.nombre} ${orden.apellido_paterno || ""} ${
-      orden.apellido_materno || ""
-    }`.trim();
-    const fechaSolicitud = orden.fecha_solicitud
-      ? orden.fecha_solicitud.toString().replace("T", " ").slice(0, 16)
-      : "-";
-
-    let html = `
-      <h4>Resultados de laboratorio</h4>
-      <p class="texto-suave">
-        Paciente: <strong>${nombrePaciente}</strong><br/>
-        ID orden: <strong>${orden.id_orden}</strong><br/>
-        Fecha de solicitud: ${fechaSolicitud}<br/>
-        Estado de la orden: ${orden.estado_orden || "-"}
-      </p>
-    `;
-
-    if (!Array.isArray(resultados) || resultados.length === 0) {
-      html += `<p class="texto-suave">Aún no hay resultados capturados para esta orden.</p>`;
-      contenedor.innerHTML = html;
-      return;
-    }
-
-    html += `
-      <table class="tabla-lista">
-        <thead>
-          <tr>
-            <th>ID orden</th>
-            <th>Fecha resultado</th>
-            <th>Estudio</th>
-            <th>Resultado</th>
-            <th>Unidad</th>
-            <th>Valores de referencia</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-
-    for (const r of resultados) {
-      const fechaRes = r.fecha_resultado
-        ? r.fecha_resultado.toString().replace("T", " ").slice(0, 16)
-        : "-";
-
-      html += `
-        <tr>
-          <td>${orden.id_orden}</td>
-          <td>${fechaRes}</td>
-          <td>${r.nombre_estudio}</td>
-          <td>${r.resultado}</td>
-          <td>${r.unidad || "-"}</td>
-          <td>${r.valores_referencia || "-"}</td>
-        </tr>
-      `;
-    }
-
-    html += `</tbody></table>`;
-
-    contenedor.innerHTML = html;
-  } catch (err) {
-    console.error(err);
-    contenedor.innerHTML = `
-      <p class="texto-suave" style="color:#b91c1c;">
-        ${err.message}
-      </p>
-    `;
+  if (session?.roles?.includes("MEDICO")) {
+    currentView = { name: "pacientes", params: {} };
+  } else {
+    currentView = { name: "login", params: {} };
   }
-}
+
+  render();
+})();

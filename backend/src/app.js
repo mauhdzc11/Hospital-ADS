@@ -74,6 +74,107 @@ const uploadReceta = multer({ storage: storageRecetas });
 const LIMITE_CANCELACION_HORAS = 24;
 
 /**
+ * Migraciones mínimas automáticas para que el proyecto funcione
+ * solo reemplazando archivos (sin ejecutar SQL manual).
+ *
+ * Nota: Si alguna tabla/columna no existe en tu BD, aquí se crea/agrega.
+ */
+async function ensureSchemaMinimo() {
+  // Helpers
+  const hasColumn = async (table, column) => {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS cnt
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = ?
+         AND COLUMN_NAME = ?`,
+      [table, column]
+    );
+    return (rows?.[0]?.cnt || 0) > 0;
+  };
+
+  const addColumnIfMissing = async (table, column, alterSql) => {
+    const exists = await hasColumn(table, column);
+    if (exists) return;
+    await pool.query(alterSql);
+    console.log(`✅ Migración: columna agregada ${table}.${column}`);
+  };
+
+  // 1) Triage en pacientes (verde/amarillo/rojo)
+  await addColumnIfMissing(
+    'pacientes',
+    'triage',
+    `ALTER TABLE pacientes
+       ADD COLUMN triage VARCHAR(10) NOT NULL DEFAULT 'verde'`
+  );
+
+  // 2) Solicitud de cambio de médico en citas (se guarda y aplica en la siguiente cita)
+  await addColumnIfMissing(
+    'citas',
+    'solicita_cambio_medico',
+    `ALTER TABLE citas
+       ADD COLUMN solicita_cambio_medico TINYINT(1) NOT NULL DEFAULT 0`
+  );
+
+  await addColumnIfMissing(
+    'citas',
+    'motivo_cambio_medico',
+    `ALTER TABLE citas
+       ADD COLUMN motivo_cambio_medico VARCHAR(255) NULL`
+  );
+
+  // 3) Vigencia de recetas (3 días hábiles)
+  await addColumnIfMissing(
+    'recetas_medicas',
+    'fecha_vigencia',
+    `ALTER TABLE recetas_medicas
+       ADD COLUMN fecha_vigencia DATETIME NULL`
+  );
+
+  // 4) Historial de modificaciones de nota evolutiva
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notas_evolucion_historial (
+      id_historial INT AUTO_INCREMENT PRIMARY KEY,
+      id_nota INT NOT NULL,
+      id_medico INT NOT NULL,
+      fecha_cambio DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      contenido_anterior TEXT NULL,
+      contenido_nuevo TEXT NULL,
+      INDEX idx_historial_nota (id_nota),
+      INDEX idx_historial_fecha (fecha_cambio)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  console.log('✅ Migraciones mínimas listas');
+}
+
+// Ejecutar migraciones al arrancar
+ensureSchemaMinimo().catch((err) => {
+  console.error('⚠️ Migración automática falló (puedes ignorar si tu BD ya está completa):', err.message);
+});
+
+/** Convierte Date -> 'YYYY-MM-DD HH:mm:ss' para MySQL */
+function toMysqlDateTime(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** Suma N días hábiles (L-V) a una fecha (sin contar fines de semana). */
+function addBusinessDays(baseDate, businessDays) {
+  const d = new Date(baseDate);
+  let remaining = Number(businessDays) || 0;
+  while (remaining > 0) {
+    d.setDate(d.getDate() + 1);
+    const day = d.getDay(); // 0 dom, 6 sáb
+    if (day !== 0 && day !== 6) remaining -= 1;
+  }
+  return d;
+}
+
+
+/**
  * Valida fecha/hora de cita según reglas del backend.
  * Reglas:
  *  - Obligatoria
@@ -334,7 +435,8 @@ app.get('/api/pacientes/:id', async (req, res) => {
     const [rows] = await pool.query(
       `SELECT id_paciente, nombre, apellido_paterno, apellido_materno,
               fecha_nacimiento, sexo, curp, telefono, correo, direccion,
-              estatus_afiliacion
+              estatus_afiliacion,
+         triage
        FROM pacientes
        WHERE id_paciente = ? AND activo = 1`,
       [id]
@@ -348,6 +450,40 @@ app.get('/api/pacientes/:id', async (req, res) => {
   } catch (error) {
     console.error('Error al obtener paciente:', error);
     res.status(500).json({ error: 'Error al obtener paciente' });
+  }
+});
+
+
+// Actualizar triage de un paciente (solo médico, validación simple)
+app.patch('/api/pacientes/:id_paciente/triage', async (req, res) => {
+  try {
+    const { id_paciente } = req.params;
+    const { triage } = req.body;
+
+    const permitidos = ['verde', 'amarillo', 'rojo'];
+    const valor = (triage || '').toString().toLowerCase().trim();
+
+    if (!permitidos.includes(valor)) {
+      return res.status(400).json({
+        error: `Triage no válido. Debe ser uno de: ${permitidos.join(', ')}.`,
+      });
+    }
+
+    const [result] = await pool.query(
+      `UPDATE pacientes
+       SET triage = ?
+       WHERE id_paciente = ?`,
+      [valor, id_paciente]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Paciente no encontrado.' });
+    }
+
+    res.json({ ok: true, mensaje: 'Triage actualizado correctamente.', triage: valor });
+  } catch (error) {
+    console.error('Error al actualizar triage:', error);
+    res.status(500).json({ error: 'Error al actualizar triage.' });
   }
 });
 
@@ -394,7 +530,8 @@ app.get('/api/pacientes/:id_paciente/resumen-expediente', async (req, res) => {
          telefono,
          correo,
          direccion,
-         estatus_afiliacion
+         estatus_afiliacion,
+         triage
        FROM pacientes
        WHERE id_paciente = ?
        LIMIT 1`,
@@ -445,7 +582,8 @@ app.get('/api/medicos/:id_medico/pacientes', async (req, res) => {
          p.curp,
          p.fecha_nacimiento,
          p.sexo,
-         p.estatus_afiliacion
+         p.estatus_afiliacion,
+         p.triage
        FROM pacientes p
        WHERE p.id_medico_tratante = ? AND p.activo = 1
        ORDER BY p.nombre, p.apellido_paterno`,
@@ -463,11 +601,17 @@ app.get('/api/medicos/:id_medico/pacientes', async (req, res) => {
 // 6) CITAS (PORTAL PACIENTE + MÓDULO MÉDICO)
 // ------------------------------------------
 
+
 // Crear nueva cita para un paciente (portal web)
 app.post('/api/pacientes/:id_paciente/citas', async (req, res) => {
   try {
     const { id_paciente } = req.params;
-    const { fecha_hora, motivo } = req.body;
+    const {
+      fecha_hora,
+      motivo,
+      solicita_cambio_medico,
+      motivo_cambio_medico,
+    } = req.body;
 
     if (!fecha_hora || !motivo) {
       return res
@@ -480,6 +624,16 @@ app.post('/api/pacientes/:id_paciente/citas', async (req, res) => {
     if (errorHorario) {
       return res.status(400).json({ error: errorHorario });
     }
+
+    // Normalizar solicitud de cambio de médico
+    const solicitaCambio =
+      solicita_cambio_medico === true ||
+      solicita_cambio_medico === 1 ||
+      String(solicita_cambio_medico || '').toLowerCase() === 'true';
+
+    const motivoCambio = solicitaCambio
+      ? (motivo_cambio_medico || '').toString().trim().slice(0, 255) || null
+      : null;
 
     // 1. Verificar que exista el paciente y obtener su médico tratante
     const [pacRows] = await pool.query(
@@ -496,30 +650,55 @@ app.post('/api/pacientes/:id_paciente/citas', async (req, res) => {
 
     const idMedico = pacRows[0].id_medico_tratante || null;
 
-    // 2. Insertar la cita incluyendo el id_medico
-    const [result] = await pool.query(
-      `INSERT INTO citas (
-         id_paciente,
-         id_medico,
-         fecha_hora,
-         motivo,
-         estado_cita,
-         fecha_solicitud
-       ) VALUES (?, ?, ?, ?, 'programada', NOW())`,
-      [id_paciente, idMedico, fecha_hora, motivo]
-    );
+    // 2. Insertar la cita incluyendo el id_medico y (si existe en BD) la solicitud de cambio
+    let result;
+    try {
+      [result] = await pool.query(
+        `INSERT INTO citas (
+           id_paciente,
+           id_medico,
+           fecha_hora,
+           motivo,
+           estado_cita,
+           fecha_solicitud,
+           solicita_cambio_medico,
+           motivo_cambio_medico
+         ) VALUES (?, ?, ?, ?, 'programada', NOW(), ?, ?)`,
+        [id_paciente, idMedico, fecha_hora, motivo, solicitaCambio ? 1 : 0, motivoCambio]
+      );
+    } catch (e) {
+      // Fallback si todavía no existe la columna en alguna BD antigua
+      if (String(e.message || '').includes('Unknown column')) {
+        [result] = await pool.query(
+          `INSERT INTO citas (
+             id_paciente,
+             id_medico,
+             fecha_hora,
+             motivo,
+             estado_cita,
+             fecha_solicitud
+           ) VALUES (?, ?, ?, ?, 'programada', NOW())`,
+          [id_paciente, idMedico, fecha_hora, motivo]
+        );
+      } else {
+        throw e;
+      }
+    }
 
     res.status(201).json({
       ok: true,
       mensaje: 'Cita creada correctamente.',
       id_cita: result.insertId,
       id_medico: idMedico,
+      solicita_cambio_medico: solicitaCambio ? 1 : 0,
+      motivo_cambio_medico: motivoCambio,
     });
   } catch (error) {
     console.error('Error al crear cita:', error);
     res.status(500).json({ error: 'Error al crear la cita.' });
   }
 });
+
 
 // Historial de citas de un paciente (portal)
 app.get('/api/pacientes/:id/citas', async (req, res) => {
@@ -696,30 +875,53 @@ app.put('/api/citas/:id_cita', async (req, res) => {
   }
 });
 
+
 // Citas de un médico (para la app de escritorio)
+// - Sin query: separa en futuras/historial (como estaba)
+// - Con ?fecha=YYYY-MM-DD: devuelve la agenda de ese día
 app.get('/api/medicos/:id_medico/citas', async (req, res) => {
   try {
     const { id_medico } = req.params;
+    const { fecha } = req.query;
 
-    const [rows] = await pool.query(
-      `SELECT
-         c.id_cita,
-         c.id_paciente,
-         c.id_medico,
-         c.fecha_hora,
-         c.motivo,
-         c.estado_cita,
-         c.fecha_solicitud,
-         c.fecha_cancelacion,
-         p.nombre,
-         p.apellido_paterno,
-         p.apellido_materno
-       FROM citas c
-       INNER JOIN pacientes p ON p.id_paciente = c.id_paciente
-       WHERE c.id_medico = ?
-       ORDER BY c.fecha_hora`,
-      [id_medico]
-    );
+    // Campos base
+    const selectSql = `
+      SELECT
+        c.id_cita,
+        c.id_paciente,
+        c.id_medico,
+        c.fecha_hora,
+        c.motivo,
+        c.estado_cita,
+        c.fecha_solicitud,
+        c.fecha_cancelacion,
+        c.solicita_cambio_medico,
+        c.motivo_cambio_medico,
+        p.nombre,
+        p.apellido_paterno,
+        p.apellido_materno
+      FROM citas c
+      INNER JOIN pacientes p ON p.id_paciente = c.id_paciente
+      WHERE c.id_medico = ?
+    `;
+
+    // Agenda por día
+    if (fecha) {
+      // aceptar YYYY-MM-DD
+      const f = String(fecha).slice(0, 10);
+      const inicio = `${f} 00:00:00`;
+      const fin = `${f} 23:59:59`;
+
+      const [rows] = await pool.query(
+        `${selectSql} AND c.fecha_hora BETWEEN ? AND ? ORDER BY c.fecha_hora`,
+        [id_medico, inicio, fin]
+      );
+
+      return res.json({ fecha: f, citas: rows });
+    }
+
+    // Vista clásica: futuras + historial
+    const [rows] = await pool.query(`${selectSql} ORDER BY c.fecha_hora`, [id_medico]);
 
     const ahora = new Date();
     const futuras = [];
@@ -727,18 +929,16 @@ app.get('/api/medicos/:id_medico/citas', async (req, res) => {
 
     for (const c of rows) {
       const estado = (c.estado_cita || '').toLowerCase();
-      const fecha = c.fecha_hora ? new Date(c.fecha_hora) : null;
+      const fechaCita = c.fecha_hora ? new Date(c.fecha_hora) : null;
 
       // Próximas: solo programadas y con fecha en el futuro
-      if (estado === 'programada' && fecha && fecha >= ahora) {
+      if (estado === 'programada' && fechaCita && fechaCita >= ahora) {
         futuras.push(c);
       } else {
-        // Todo lo demás se considera historial
         historial.push(c);
       }
     }
 
-    // Ordenar: próximas ascendente, historial descendente
     futuras.sort((a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora));
     historial.sort((a, b) => new Date(b.fecha_hora) - new Date(a.fecha_hora));
 
@@ -750,6 +950,7 @@ app.get('/api/medicos/:id_medico/citas', async (req, res) => {
       .json({ error: 'Error al obtener la agenda de citas del médico.' });
   }
 });
+
 
 // ------------------------------------------
 // 7) RECETAS MÉDICAS (PACIENTE Y EXPEDIENTE)
@@ -768,7 +969,8 @@ app.get('/api/pacientes/:id/recetas', async (req, res) => {
          indicaciones,
          archivo_nombre_original,
          archivo_ruta,
-         archivo_tipo
+         archivo_tipo,
+         fecha_vigencia
        FROM recetas_medicas
        WHERE id_paciente = ?
        ORDER BY fecha_receta DESC`,
@@ -809,7 +1011,8 @@ app.get('/api/expedientes/:id_expediente/recetas', async (req, res) => {
          descripcion,
          archivo_nombre_original,
          archivo_ruta,
-         archivo_tipo
+         archivo_tipo,
+         fecha_vigencia
        FROM recetas_medicas
        WHERE id_paciente = ?
        ORDER BY fecha_receta DESC`,
@@ -863,22 +1066,27 @@ app.post(
       // 3) Datos del archivo
       const rutaRelativa = path.join('uploads', 'recetas', req.file.filename);
 
+      // Vigencia: 3 días hábiles (L-V) en farmacia del hospital
+      const fechaVigencia = toMysqlDateTime(addBusinessDays(new Date(), 3));
+
       // 4) Insertar la receta en la tabla recetas_medicas
       const [result] = await pool.query(
         `INSERT INTO recetas_medicas
          (id_paciente,
           id_medico,
           fecha_receta,
+          fecha_vigencia,
           descripcion,
           medicamentos,
           indicaciones,
           archivo_nombre_original,
           archivo_ruta,
           archivo_tipo)
-         VALUES (?, ?, NOW(), ?, NULL, NULL, ?, ?, ?)`,
+         VALUES (?, ?, NOW(), ?, ?, NULL, NULL, ?, ?, ?)`,
         [
           idPaciente,
           id_medico,
+          fechaVigencia,
           descripcion || null,
           req.file.originalname,
           rutaRelativa,
@@ -971,6 +1179,71 @@ app.post('/api/expedientes/:id_expediente/ordenes-laboratorio', async (req, res)
   } catch (error) {
     console.error('Error al registrar orden de laboratorio:', error);
     res.status(500).json({ error: 'Error al registrar orden de laboratorio.' });
+  }
+});
+
+
+// Órdenes de laboratorio solicitadas por un médico (escritorio: vista por médico)
+app.get('/api/medicos/:id_medico/ordenes-laboratorio', async (req, res) => {
+  try {
+    const { id_medico } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT
+         o.id_orden,
+         o.fecha_solicitud,
+         o.estado_orden,
+         o.observaciones,
+         p.id_paciente,
+         p.nombre,
+         p.apellido_paterno,
+         p.apellido_materno,
+         COUNT(r.id_resultado) AS num_resultados
+       FROM ordenes_laboratorio o
+       INNER JOIN expedientes_clinicos e ON e.id_expediente = o.id_expediente
+       INNER JOIN pacientes p ON p.id_paciente = e.id_paciente
+       LEFT JOIN resultados_laboratorio r ON r.id_orden = o.id_orden
+       WHERE o.id_medico_solicita = ?
+       GROUP BY o.id_orden
+       ORDER BY o.fecha_solicitud DESC`,
+      [id_medico]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener órdenes por médico:', error);
+    res.status(500).json({ error: 'Error al obtener órdenes de laboratorio del médico.' });
+  }
+});
+
+// Resultados de laboratorio por orden (escritorio: detalle de una orden)
+app.get('/api/ordenes-laboratorio/:id_orden/resultados', async (req, res) => {
+  try {
+    const { id_orden } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT
+         id_resultado,
+         id_orden,
+         nombre_estudio,
+         resultado,
+         unidad,
+         valores_referencia,
+         fecha_resultado,
+         observaciones,
+         archivo_nombre_original,
+         archivo_ruta,
+         archivo_tipo
+       FROM resultados_laboratorio
+       WHERE id_orden = ?
+       ORDER BY fecha_resultado DESC`,
+      [id_orden]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener resultados por orden:', error);
+    res.status(500).json({ error: 'Error al obtener resultados de laboratorio por orden.' });
   }
 });
 
@@ -1132,6 +1405,93 @@ app.post('/api/expedientes/:id_expediente/notas', async (req, res) => {
   } catch (error) {
     console.error('Error al crear nota de evolución:', error);
     res.status(500).json({ error: 'Error al crear nota de evolución.' });
+  }
+});
+
+
+// Editar una nota de evolución (con historial de modificaciones)
+// Requisito: "Solo debe de haber historial de modificacion de nota evolutiva"
+app.put('/api/notas/:id_nota', async (req, res) => {
+  try {
+    const { id_nota } = req.params;
+    const { id_medico, contenido, contenido_nuevo } = req.body;
+
+    const nuevo = (contenido_nuevo ?? contenido ?? '').toString().trim();
+
+    if (!id_medico) {
+      return res.status(400).json({ error: 'id_medico es obligatorio.' });
+    }
+    if (!nuevo) {
+      return res.status(400).json({ error: 'El contenido nuevo no puede ir vacío.' });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id_nota, id_medico, contenido
+       FROM notas_evolucion
+       WHERE id_nota = ?
+       LIMIT 1`,
+      [id_nota]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Nota no encontrada.' });
+    }
+
+    const nota = rows[0];
+
+    // Regla simple: solo el médico que creó la nota puede modificarla
+    if (String(nota.id_medico) !== String(id_medico)) {
+      return res.status(403).json({
+        error: 'No tienes permiso para modificar esta nota (solo el médico autor puede editarla).',
+      });
+    }
+
+    // Guardar historial
+    await pool.query(
+      `INSERT INTO notas_evolucion_historial
+         (id_nota, id_medico, fecha_cambio, contenido_anterior, contenido_nuevo)
+       VALUES (?, ?, NOW(), ?, ?)`,
+      [id_nota, id_medico, nota.contenido || null, nuevo]
+    );
+
+    // Actualizar nota
+    await pool.query(
+      `UPDATE notas_evolucion
+       SET contenido = ?
+       WHERE id_nota = ?`,
+      [nuevo, id_nota]
+    );
+
+    res.json({ ok: true, mensaje: 'Nota actualizada y cambio registrado en historial.' });
+  } catch (error) {
+    console.error('Error al editar nota:', error);
+    res.status(500).json({ error: 'Error al editar la nota.' });
+  }
+});
+
+// Ver historial de cambios de una nota
+app.get('/api/notas/:id_nota/historial', async (req, res) => {
+  try {
+    const { id_nota } = req.params;
+
+    const [rows] = await pool.query(
+      `SELECT
+         id_historial,
+         id_nota,
+         id_medico,
+         fecha_cambio,
+         contenido_anterior,
+         contenido_nuevo
+       FROM notas_evolucion_historial
+       WHERE id_nota = ?
+       ORDER BY fecha_cambio DESC`,
+      [id_nota]
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener historial de nota:', error);
+    res.status(500).json({ error: 'Error al obtener historial de la nota.' });
   }
 });
 

@@ -157,6 +157,8 @@ function App() {
   const [nuevaCita, setNuevaCita] = useState({
     fecha_hora: "",
     motivo: "",
+    solicita_cambio_medico: false,
+    motivo_cambio_medico: "",
   });
   const [guardandoCita, setGuardandoCita] = useState(false);
 
@@ -377,8 +379,17 @@ function App() {
   // -------- 3.5) HANDLERS DE CITAS (NUEVA, CANCELAR, REAGENDAR) --------
 
   const handleNuevaCitaChange = (e) => {
-    const { name, value } = e.target;
-    setNuevaCita((prev) => ({ ...prev, [name]: value }));
+    const { name, type, value, checked } = e.target;
+    setNuevaCita((prev) => {
+      const next = {
+        ...prev,
+        [name]: type === "checkbox" ? checked : value,
+      };
+      if (name === "solicita_cambio_medico" && !checked) {
+        next.motivo_cambio_medico = "";
+      }
+      return next;
+    });
   };
 
   const handleCrearCita = async (e) => {
@@ -414,7 +425,12 @@ function App() {
       }
 
       await res.json(); // por si el backend manda algo
-      setNuevaCita({ fecha_hora: "", motivo: "" });
+      setNuevaCita({
+        fecha_hora: "",
+        motivo: "",
+        solicita_cambio_medico: false,
+        motivo_cambio_medico: "",
+      });
       await cargarCitas();
     } catch (err) {
       console.error(err);
@@ -1051,6 +1067,32 @@ function App() {
                         onChange={handleNuevaCitaChange}
                       />
                     </div>
+
+                    <div className="form-field">
+                      <label style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          name="solicita_cambio_medico"
+                          checked={!!nuevaCita.solicita_cambio_medico}
+                          onChange={handleNuevaCitaChange}
+                        />
+                        Solicitar cambio de médico (aplica hasta la siguiente cita)
+                      </label>
+                    </div>
+
+                    {nuevaCita.solicita_cambio_medico && (
+                      <div className="form-field">
+                        <label>Motivo del cambio (opcional)</label>
+                        <input
+                          type="text"
+                          name="motivo_cambio_medico"
+                          value={nuevaCita.motivo_cambio_medico}
+                          onChange={handleNuevaCitaChange}
+                          maxLength={255}
+                        />
+                      </div>
+                    )}
+
                     <div className="form-actions">
                       <button
                         type="submit"
@@ -1084,6 +1126,7 @@ function App() {
                         <thead>
                           <tr>
                             <th>Fecha</th>
+                            <th>Vigencia</th>
                             <th>Descripción</th>
                             <th>Archivo</th>
                           </tr>
@@ -1092,6 +1135,7 @@ function App() {
                           {recetas.map((r) => (
                             <tr key={r.id_receta}>
                               <td>{formatDateTimeDisplay(r.fecha_receta)}</td>
+                              <td>{formatDateTimeDisplay(r.fecha_vigencia) || "-"}</td>
                               <td>{r.descripcion || "-"}</td>
                               <td>
                                 {r.archivo_ruta ? (

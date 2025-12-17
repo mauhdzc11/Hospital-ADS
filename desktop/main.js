@@ -10,6 +10,8 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: "Hospital ADS - Escritorio",
+    // Coloca tu icono en: desktop/renderer/imagenes/app-icon.png (o .ico en Windows)
+    icon: path.join(__dirname, "renderer", "imagenes", "app.icon.png"),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
