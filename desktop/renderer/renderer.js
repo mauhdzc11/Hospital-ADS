@@ -401,6 +401,47 @@ function injectStyles() {
     .ads-actions{ min-width:auto; }
     .ads-login-card{ grid-template-columns: 1fr; }
   }
+    /* Home médico */
+.ads-home-grid{ display:grid; grid-template-columns: 1.25fr .75fr; gap:16px; }
+@media (max-width: 980px){ .ads-home-grid{ grid-template-columns:1fr; } }
+
+.ads-profile{ display:flex; gap:16px; align-items:center; }
+.ads-avatar{
+  width:84px; height:84px; border-radius:18px;
+  background:#eaf1ff; border:1px solid #dbeafe;
+  overflow:hidden; display:flex; align-items:center; justify-content:center;
+  font-weight:900; color: var(--primary);
+}
+.ads-avatar img{ width:100%; height:100%; object-fit:cover; display:block; }
+
+.ads-kpis{ display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-top:12px; }
+@media (max-width: 980px){ .ads-kpis{ grid-template-columns: repeat(2, 1fr);} }
+
+.ads-kpi{
+  padding:14px;
+  border:1px solid var(--line);
+  border-radius: var(--radius2);
+  background:#fff;
+}
+.ads-kpi b{ font-size:22px; display:block; margin-bottom:4px; }
+.ads-kpi span{ color:var(--muted); font-size:12px; font-weight:700; }
+
+.ads-quick{ display:flex; gap:10px; flex-wrap:wrap; }
+.ads-quick .ads-btn{ padding:10px 12px; border-radius:12px; }
+
+.ads-mini-list{ display:flex; flex-direction:column; gap:10px; }
+.ads-mini-item{
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius: var(--radius2);
+  background:#fff;
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+}
+.ads-mini-item b{ display:block; }
+.ads-mini-item small{ color:var(--muted); font-weight:700; }
+
   `;
 
   const style = document.createElement("style");
@@ -430,7 +471,7 @@ function ensureShell() {
     h(
       "div",
       { class: "ads-brand__logo" },
-      // Pon tu imagen en: desktop/renderer/imagenes/logo.png
+      
       h("img", {
         src: "./imagenes/logo.png",
         alt: "Hospital ADS",
@@ -460,7 +501,7 @@ function ensureShell() {
   );
 
   const actions = h("div", { class: "ads-actions" },
-    iconButton("Inicio", "icono-home.png", () => setView("pacientes", {}, { pushHistory: false })),
+    iconButton("Inicio", "icono-home.png", () => setView("home", {}, { pushHistory: false })),
     iconButton("Regresar", "icono-back.png", () => goBack()),
     iconButton("Recargar", "icono-recargar.png", () => render()),
     iconButton("Salir", "icono-salir.png", () => logout())
@@ -628,7 +669,7 @@ async function onLogin(e) {
     session.roles = data.roles || [];
     session.medico = data.medico || null;
 
-    // Persistimos solo para no pedir login a cada rato (si quieres, lo quitamos)
+    // Persistimos solo para no pedir login a cada rato 
     localStorage.setItem("ads_session", JSON.stringify(session));
 
     if (!session.roles.includes("MEDICO")) {
@@ -637,7 +678,7 @@ async function onLogin(e) {
     }
 
     navStack = [];
-    setView("pacientes", {}, { pushHistory: false });
+    setView("home", {}, { pushHistory: false });
 
   } catch (err) {
     msg.textContent = err.message;
@@ -665,6 +706,155 @@ function hydrateSession() {
 // ------------------------------
 // Views
 // ------------------------------
+
+function ymdToday() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function fullName(m) {
+  return `${m?.nombre || ""} ${m?.apellido_paterno || ""} ${m?.apellido_materno || ""}`.trim();
+}
+
+function initialsFromName(name) {
+  const parts = (name || "").split(/\s+/).filter(Boolean);
+  const a = parts[0]?.[0] || "M";
+  const b = parts[1]?.[0] || "";
+  return (a + b).toUpperCase();
+}
+async function viewHome() {
+  const container = $("#ads-container");
+  container.innerHTML = "";
+
+  const m = session.medico || {};
+  const nombre = fullName(m) || "Médico";
+  const esp = m.especialidad || "Sin especialidad";
+  const usuario = session.usuario || "-";
+
+  // KPIs
+  const kPac = h("b", {}, "—");
+  const kHoy = h("b", {}, "—");
+  const kProx = h("b", {}, "—");
+  const kOrd = h("b", {}, "—");
+  const kOrdSub = h("span", {}, "Órdenes de laboratorio");
+
+  const listaHoy = h("div", { class: "ads-mini-list" },
+    h("div", { class: "ads-muted" }, "Cargando citas de hoy…")
+  );
+
+  const card = h("section", { class: "ads-card" },
+    h("div", { class: "ads-card__hd" },
+      h("div", {},
+        h("h2", {}, "Home"),
+        h("div", { class: "ads-muted" }, "Panel del médico")
+      )
+    ),
+    h("div", { class: "ads-card__bd" },
+
+      // Perfil
+      h("div", { class: "ads-profile" },
+        h("div", { class: "ads-avatar" },
+          // Si no existe imagen, cae a iniciales
+          h("img", {
+            src: "./imagenes/medico.png",
+            alt: "Perfil",
+            onerror: (e) => {
+              e.target.remove();
+              e.currentTarget.textContent = initialsFromName(nombre);
+            }
+          })
+        ),
+        h("div", {},
+          h("h3", { style: "margin:0" }, nombre),
+          h("div", { class: "ads-muted", style: "margin-top:4px" }, `${esp} • Usuario: ${usuario}`)
+        )
+      ),
+
+      h("div", { style: "height:14px" }),
+
+      // KPIs
+      h("div", { class: "ads-kpis" },
+        h("div", { class: "ads-kpi" }, kPac, h("span", {}, "Pacientes asignados")),
+        h("div", { class: "ads-kpi" }, kHoy, h("span", {}, "Citas hoy")),
+        h("div", { class: "ads-kpi" }, kProx, h("span", {}, "Próximas citas")),
+        h("div", { class: "ads-kpi" }, kOrd, kOrdSub)
+      ),
+
+      h("div", { style: "height:16px" }),
+
+      // Citas de hoy
+      h("div", { class: "ads-card", style: "box-shadow:none;" },
+        h("div", { class: "ads-card__hd" },
+          h("div", {},
+            h("h3", {}, "Citas de hoy"),
+            h("div", { class: "ads-muted" }, "Próximas 5")
+          )
+        ),
+        h("div", { class: "ads-card__bd" }, listaHoy)
+      )
+    )
+  );
+
+  container.appendChild(card);
+
+  // Cargar data (sin endpoints nuevos)
+  try {
+    const idMed = session.medico?.id_medico;
+    if (!idMed) return;
+
+    const hoy = ymdToday();
+
+    const [pacientes, citasHoy, citasFH, ordenes] = await Promise.allSettled([
+      api(`/api/medicos/${idMed}/pacientes`),
+      api(`/api/medicos/${idMed}/citas?fecha=${hoy}`),
+      api(`/api/medicos/${idMed}/citas`),
+      api(`/api/medicos/${idMed}/ordenes-laboratorio`),
+    ]);
+
+    const pacList = pacientes.status === "fulfilled" ? (Array.isArray(pacientes.value) ? pacientes.value : []) : [];
+    const hoyList = citasHoy.status === "fulfilled" ? (Array.isArray(citasHoy.value?.citas) ? citasHoy.value.citas : []) : [];
+    const futList = citasFH.status === "fulfilled" ? (Array.isArray(citasFH.value?.futuras) ? citasFH.value.futuras : []) : [];
+    const ordList = ordenes.status === "fulfilled" ? (Array.isArray(ordenes.value) ? ordenes.value : []) : [];
+
+    kPac.textContent = String(pacList.length);
+    kHoy.textContent = String(hoyList.length);
+    kProx.textContent = String(futList.length);
+    kOrd.textContent = String(ordList.length);
+
+    const listos = ordList.filter(o => String(o.estado_orden || "").toLowerCase().includes("resultado")).length;
+    kOrdSub.textContent = listos ? `Órdenes (Resultados listos: ${listos})` : "Órdenes de laboratorio";
+
+    // Lista “próximas 5” de hoy
+    const sorted = hoyList.slice().sort((a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora));
+    const next5 = sorted.slice(0, 5);
+
+    listaHoy.innerHTML = "";
+    if (!next5.length) {
+      listaHoy.appendChild(h("div", { class: "ads-muted" }, "No tienes citas hoy."));
+    } else {
+      for (const c of next5) {
+        const dt = c.fecha_hora ? new Date(c.fecha_hora) : null;
+        const hora = dt ? `${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}` : "-";
+        const pac = `${c.nombre || ""} ${c.apellido_paterno || ""} ${c.apellido_materno || ""}`.trim() || "-";
+        const est = c.estado_cita || "-";
+
+        listaHoy.appendChild(
+          h("div", { class: "ads-mini-item" },
+            h("div", {}, h("b", {}, pac), h("small", {}, c.motivo || "Consulta")),
+            h("div", { style: "text-align:right;" }, h("b", {}, hora), h("small", {}, est))
+          )
+        );
+      }
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+
 async function viewPacientes() {
   const container = $("#ads-container");
   container.innerHTML = "";
@@ -1941,7 +2131,6 @@ async function viewLaboratorioGlobal() {
 
   container.appendChild(card);
 
-  // 👇 importantísimo: para no acumular listeners si entras/sales de la pestaña
   $("#ads-lab-buscar").oninput = renderOrdenesMedicoTable;
   $("#ads-lab-estado").onchange = renderOrdenesMedicoTable;
 
@@ -2148,6 +2337,7 @@ function render() {
 
   setActiveTab();
 
+  if (currentView.name === "home") return viewHome();
   if (currentView.name === "pacientes") return viewPacientes();
   if (currentView.name === "agenda") return viewAgenda();
   if (currentView.name === "notas") return viewNotasGlobal();
@@ -2162,7 +2352,7 @@ function render() {
   hydrateSession();
 
   if (session?.roles?.includes("MEDICO")) {
-    currentView = { name: "pacientes", params: {} };
+    currentView = { name: "home", params: {} };
   } else {
     currentView = { name: "login", params: {} };
   }
