@@ -317,25 +317,72 @@ function injectStyles() {
   .ads-note__body{ margin-top: 10px; white-space: pre-wrap; }
 
   /* Login */
-  .ads-login{
-    min-height: 100%;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding: 24px;
-  }
-  .ads-login-card{ width: min(840px, 96vw); display:grid; grid-template-columns: 1.05fr .95fr; gap: 0; overflow:hidden; }
-  .ads-login-left{ padding: 26px; background: linear-gradient(135deg, #eaf1ff, #f5f7fa); }
-  .ads-login-right{ padding: 26px; }
-  .ads-login-brand{ display:flex; align-items:center; gap:12px; }
-  .ads-login-brand .logo{ width:54px; height:54px; border-radius: 16px; overflow:hidden; background:#fff; border:1px solid #dbeafe; }
-  .ads-login-brand .logo img{ width:100%; height:100%; object-fit:cover; display:block; }
-  .ads-login-brand .txt b{ display:block; font-size:18px; }
-  .ads-login-brand .txt span{ color: var(--muted); font-size:13px; }
-  .ads-login-hero{ margin-top: 18px; color: #0f172a; }
-  .ads-login-hero h1{ margin: 12px 0 8px; font-size: 24px; }
-  .ads-login-hero p{ margin: 0; color: var(--muted); }
-  .ads-alert{ margin-top: 14px; padding: 12px 12px; border-radius: 12px; border: 1px dashed #cbd5e1; color: #0f172a; background:#ffffffa6; }
+.ads-login{
+  min-height: calc(100vh - 48px);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 28px;
+}
+
+.ads-login-card{
+  width: min(1120px, 96vw);
+  min-height: 420px;
+  display:grid;
+  grid-template-columns: 1.15fr .85fr;
+  gap: 0;
+  overflow:hidden;
+}
+
+.ads-login-left,
+.ads-login-right{
+  padding: 34px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+}
+
+.ads-login-left{
+  background: linear-gradient(135deg, #eaf1ff, #f5f7fa);
+}
+
+.ads-login-brand{ display:flex; align-items:center; gap:14px; }
+
+.ads-login-brand .logo{
+  width: 92px;
+  height: 92px;
+  border-radius: 22px;
+  overflow:hidden;
+  background:#fff;
+  border:1px solid #dbeafe;
+}
+
+.ads-login-brand .logo img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  display:block;
+}
+
+.ads-login-brand .txt b{ display:block; font-size:22px; }
+.ads-login-brand .txt span{ color: var(--muted); font-size:14px; }
+
+.ads-login-hero h1{ margin: 14px 0 10px; font-size: 30px; }
+.ads-login-hero p{ margin: 0; color: var(--muted); font-size: 15px; }
+
+/* Botones del login (para que no se encimen) */
+.ads-login-actions{
+  display:grid;
+  grid-template-columns: 1fr 160px;
+  gap: 12px;
+  margin-top: 14px;
+  align-items:center;
+}
+
+@media (max-width: 920px){
+  .ads-login-card{ grid-template-columns: 1fr; min-height: unset; }
+  .ads-login-actions{ grid-template-columns: 1fr; }
+}
 
   /* Toast */
   #ads-toast-host{ position: fixed; right: 16px; bottom: 16px; display:flex; flex-direction:column; gap:10px; z-index: 2000; }
@@ -530,10 +577,18 @@ function renderLogin() {
       h("label", {}, "Contraseña"),
       h("input", { class: "ads-input", type: "password", name: "contrasena", autocomplete: "current-password", placeholder: "••••" })
     ),
-    h("div", { class: "ads-row" },
-      h("button", { class: "ads-btn", type: "submit", style: "min-width:180px;" }, "Ingresar"),
-      h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => { $("#login-form [name=usuario]").value=""; $("#login-form [name=contrasena]").value=""; } }, "Limpiar")
-    )
+    h("div", { class: "ads-login-actions" },
+  h("button", { class: "ads-btn", type: "submit" }, "Ingresar"),
+  h("button", {
+    class: "ads-btn ads-btn--ghost",
+    type: "button",
+    onclick: () => {
+      $("#login-form [name=usuario]").value = "";
+      $("#login-form [name=contrasena]").value = "";
+    }
+  }, "Limpiar")
+)
+
   );
 
   form.addEventListener("submit", onLogin);
@@ -542,7 +597,8 @@ function renderLogin() {
   card.appendChild(left);
   card.appendChild(right);
 
-  container.appendChild(card);
+  const wrap = h("div", { class: "ads-login" }, card);
+  container.appendChild(wrap);
 
   const msg = $("#ads-login-msg");
   msg.textContent = "";
@@ -663,21 +719,30 @@ async function loadPacientes(force) {
     return;
   }
 
+  const canRenderPacientesView = !!$("#ads-pac-tbody");
+  const buscarValue = $("#ads-buscar")?.value || "";
+
   if (!force && cachePacientes.length) {
-    renderPacientesTable($("#ads-buscar")?.value || "");
-    $("#ads-pac-sub").textContent = `Mostrando ${cachePacientes.length} de ${cachePacientes.length}`;
+    if (canRenderPacientesView) renderPacientesTable(buscarValue);
+
+    const sub = $("#ads-pac-sub");
+    if (sub) sub.textContent = `Mostrando ${cachePacientes.length} de ${cachePacientes.length}`;
     return;
   }
 
   try {
     const data = await api(`/api/medicos/${session.medico.id_medico}/pacientes`);
     cachePacientes = Array.isArray(data) ? data : [];
-    renderPacientesTable($("#ads-buscar")?.value || "");
-    $("#ads-pac-sub").textContent = `Mostrando ${cachePacientes.length} de ${cachePacientes.length}`;
+
+    if (canRenderPacientesView) renderPacientesTable(buscarValue);
+
+    const sub = $("#ads-pac-sub");
+    if (sub) sub.textContent = `Mostrando ${cachePacientes.length} de ${cachePacientes.length}`;
   } catch (err) {
     showToast(err.message, "error");
   }
 }
+
 
 function triagePill(triage) {
   const t = (triage || "").toLowerCase();
@@ -686,6 +751,26 @@ function triagePill(triage) {
   if (t.includes("rojo")) return h("span", { class: "ads-pill ads-pill--bad" }, "Rojo");
   return h("span", { class: "ads-pill" }, triage || "-");
 }
+
+async function updatePacienteTriage(id_paciente, nuevoTriage) {
+  const valor = (nuevoTriage || "").toString().toLowerCase().trim();
+  if (!["verde", "amarillo", "rojo"].includes(valor)) {
+    showToast("Triage inválido.", "error");
+    return null;
+  }
+
+  await api(`/api/pacientes/${id_paciente}/triage`, {
+    method: "PATCH",
+    body: JSON.stringify({ triage: valor }),
+  });
+
+  // actualiza cache para que al volver a pacientes se vea el nuevo triage
+  const idx = cachePacientes.findIndex((p) => Number(p.id_paciente) === Number(id_paciente));
+  if (idx >= 0) cachePacientes[idx].triage = valor;
+
+  return valor;
+}
+
 
 function renderPacientesTable(q) {
   const tbody = $("#ads-pac-tbody");
@@ -747,10 +832,60 @@ function viewExpediente({ paciente, expediente }) {
         h("h2", {}, "Expediente clínico"),
         h("div", { class: "ads-muted" }, `Paciente: ${nombre} • CURP: ${paciente.curp || "-"}`)
       ),
-      h("div", { class: "ads-row", style: "justify-content:flex-end" },
-        triagePill(paciente.triage),
-        h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => goBack() }, "Volver")
-      )
+      (() => {
+  const t = (paciente.triage || "verde").toLowerCase();
+  const currentVal = t.includes("amar") ? "amarillo" : t.includes("rojo") ? "rojo" : "verde";
+
+  const triageSelect = h(
+    "select",
+    { class: "ads-select", style: "width:160px; padding:8px 10px; border-radius:999px;" },
+    h("option", { value: "verde" }, "Verde"),
+    h("option", { value: "amarillo" }, "Amarillo"),
+    h("option", { value: "rojo" }, "Rojo")
+  );
+  triageSelect.value = currentVal;
+
+  const btnApply = h(
+    "button",
+    { class: "ads-btn ads-btn--ghost", type: "button", disabled: true, style: "padding:8px 12px; border-radius:999px;" },
+    "Aplicar"
+  );
+
+  triageSelect.addEventListener("change", () => {
+    btnApply.disabled = triageSelect.value === currentVal;
+  });
+
+  btnApply.addEventListener("click", async () => {
+    const nuevo = triageSelect.value;
+
+    btnApply.disabled = true;
+    const oldText = btnApply.textContent;
+    btnApply.textContent = "Guardando...";
+
+    try {
+      const updated = await updatePacienteTriage(paciente.id_paciente, nuevo);
+      if (updated) {
+        // actualiza el paciente en la vista actual y re-render sin afectar historial
+        currentView.params.paciente.triage = updated;
+        showToast("Triage actualizado.", "ok");
+        setView("expediente", currentView.params, { pushHistory: false });
+      }
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      btnApply.textContent = oldText;
+    }
+  });
+
+  return h(
+    "div",
+    { class: "ads-row", style: "justify-content:flex-end; align-items:center;" },
+    triagePill(paciente.triage),
+    triageSelect,
+    btnApply
+  );
+})()
+
     ),
     h("div", { class: "ads-card__bd" },
       h("div", { class: "ads-row" },
@@ -1091,9 +1226,27 @@ async function cargarRecetas(id_expediente) {
     }
 
     for (const r of rows) {
-      const archivo = r.archivo_ruta
-        ? h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => window.electronAPI?.abrirArchivoReceta?.(r.archivo_ruta) }, "Abrir")
-        : h("span", { class: "ads-muted" }, "-");
+      const openRecetaFile = (ruta) => {
+  if (!ruta) return;
+
+  // ✅ Electron (lo correcto)
+  if (window.electronAPI?.verArchivoReceta) {
+    window.electronAPI.verArchivoReceta(ruta);
+    return;
+  }
+
+  // 🔁 Fallback: abrir desde backend (si está servido como /uploads)
+  const safe = String(ruta).replace(/\\/g, "/");
+  window.open(`${BACKEND_URL}/${safe}`, "_blank");
+};
+
+const archivo = r.archivo_ruta
+  ? h("button", {
+      class: "ads-btn ads-btn--ghost",
+      type: "button",
+      onclick: () => openRecetaFile(r.archivo_ruta)
+    }, "Abrir")
+  : h("span", { class: "ads-muted" }, "-");
 
       tb.appendChild(
         h("tr", {},
@@ -1200,10 +1353,97 @@ async function cargarOrdenes(id_expediente) {
   }
 }
 
+function openArchivoRelativo(rutaRelativa) {
+  if (!rutaRelativa) return;
+
+  if (window.electronAPI?.verArchivoReceta) {
+    window.electronAPI.verArchivoReceta(rutaRelativa);
+    return;
+  }
+
+  // fallback web
+  const safe = String(rutaRelativa).replace(/\\/g, "/");
+  window.open(`${BACKEND_URL}/${safe}`, "_blank");
+}
+
+async function verResultadosOrden(id_orden) {
+  const wrap = h("div", {}, h("div", { class: "ads-muted" }, "Cargando resultados…"));
+  modal(`Resultados de la orden #${id_orden}`, wrap, { width: 980 });
+
+  try {
+    const rows = await api(`/api/ordenes-laboratorio/${id_orden}/resultados`);
+    wrap.innerHTML = "";
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      wrap.appendChild(h("div", { class: "ads-muted" }, "Aún no hay resultados para esta orden."));
+      return;
+    }
+
+    const tableWrap = h("div", { class: "ads-tablewrap" });
+    const table = h("table", { class: "ads-table" },
+      h("thead", {},
+        h("tr", {},
+          h("th", {}, "Fecha"),
+          h("th", {}, "Estudio"),
+          h("th", {}, "Resultado"),
+          h("th", {}, "Unidad"),
+          h("th", {}, "Referencia"),
+          h("th", {}, "Archivo")
+        )
+      ),
+      h("tbody", {})
+    );
+
+    const tb = table.querySelector("tbody");
+
+    for (const r of rows) {
+      const archivoCell = r.archivo_ruta
+        ? h("button", {
+            class: "ads-btn ads-btn--ghost",
+            type: "button",
+            onclick: () => openArchivoRelativo(r.archivo_ruta)
+          }, "Abrir")
+        : h("span", { class: "ads-muted" }, "-");
+
+      tb.appendChild(
+        h("tr", {},
+          h("td", {}, fmtDateTime(r.fecha_resultado)),
+          h("td", {}, r.nombre_estudio || "-"),
+          h("td", {}, r.resultado || "-"),
+          h("td", {}, r.unidad || "-"),
+          h("td", {}, r.valores_referencia || "-"),
+          h("td", {}, archivoCell)
+        )
+      );
+    }
+
+    tableWrap.appendChild(table);
+    wrap.appendChild(tableWrap);
+  } catch (err) {
+    wrap.innerHTML = "";
+    wrap.appendChild(h("div", { class: "ads-muted" }, `Error: ${err.message}`));
+  }
+}
+
+
 async function renderResultadosExpediente(panel, { expediente }) {
   panel.innerHTML = "";
   panel.appendChild(h("div", { id: "ads-res-table" }, ""));
   await cargarResultados(expediente.id_expediente);
+}
+
+function abrirArchivo(rutaRelativa) {
+  if (!rutaRelativa) return;
+
+
+  if (window.electronAPI?.verArchivoReceta) {
+    window.electronAPI.verArchivoReceta(rutaRelativa);
+    return;
+  }
+
+  // fallback por si un día corres en navegador
+  const safe = String(rutaRelativa).replace(/\\/g, "/");
+  window.open(`${BACKEND_URL}/${safe}`, "_blank");
 }
 
 async function cargarResultados(id_expediente) {
@@ -1224,7 +1464,9 @@ async function cargarResultados(id_expediente) {
           h("th", {}, "Estudio"),
           h("th", {}, "Resultado"),
           h("th", {}, "Unidad"),
-          h("th", {}, "Referencia")
+          h("th", {}, "Referencia"),
+          h("th", {}, "Archivo")
+
         )
       ),
       h("tbody", {})
@@ -1244,7 +1486,17 @@ async function cargarResultados(id_expediente) {
           h("td", {}, r.nombre_estudio || "-"),
           h("td", {}, r.resultado || "-"),
           h("td", {}, r.unidad || "-"),
-          h("td", {}, r.valores_referencia || "-")
+          h("td", {}, r.valores_referencia || "-"),
+          h("td", {},
+  r.archivo_ruta
+    ? h("button", {
+        class: "ads-btn ads-btn--ghost",
+        type: "button",
+        onclick: () => openArchivoRelativo(r.archivo_ruta)
+      }, "Abrir")
+    : h("span", { class: "ads-muted" }, "-")
+)
+
         )
       );
     }
@@ -1260,44 +1512,241 @@ async function cargarResultados(id_expediente) {
 // ------------------------------
 // Agenda del médico
 // ------------------------------
-async function viewAgenda() {
+let agendaCurrentTab = "hoy";
+let agendaCacheFH = null; // { futuras, historial }
+let agendaCacheHoy = null; // { fecha, citas }
+
+function ymd(d = new Date()) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function agendaTabBtn(key, label) {
+  const b = h(
+    "button",
+    {
+      class: "ads-subtab",
+      type: "button",
+      onclick: () => setAgendaTab(key),
+    },
+    label
+  );
+  b.dataset.key = key;
+  return b;
+}
+
+async function fetchAgendaHoy(force = false) {
+  const f = ymd();
+  if (!force && agendaCacheHoy && agendaCacheHoy.fecha === f) return agendaCacheHoy;
+
+  const data = await api(`/api/medicos/${session.medico.id_medico}/citas?fecha=${f}`);
+  agendaCacheHoy = { fecha: f, citas: Array.isArray(data.citas) ? data.citas : [] };
+  return agendaCacheHoy;
+}
+
+async function fetchAgendaFutHist(force = false) {
+  if (!force && agendaCacheFH) return agendaCacheFH;
+
+  const data = await api(`/api/medicos/${session.medico.id_medico}/citas`);
+  agendaCacheFH = {
+    futuras: Array.isArray(data.futuras) ? data.futuras : [],
+    historial: Array.isArray(data.historial) ? data.historial : [],
+  };
+  return agendaCacheFH;
+}
+
+async function cambiarEstadoCita(id_cita, nuevo_estado) {
+  await api(`/api/citas/${id_cita}/estado`, {
+    method: "PATCH",
+    body: JSON.stringify({ nuevo_estado }),
+  });
+}
+
+function renderAgendaHoyTabla(citas) {
+  const wrap = h("div", { class: "ads-tablewrap" });
+  const table = h(
+    "table",
+    { class: "ads-table" },
+    h(
+      "thead",
+      {},
+      h(
+        "tr",
+        {},
+        h("th", {}, "Hora"),
+        h("th", {}, "Paciente"),
+        h("th", {}, "Motivo"),
+        h("th", {}, "Estado"),
+        h("th", {}, "Acciones")
+      )
+    ),
+    h("tbody", {})
+  );
+
+  const tb = table.querySelector("tbody");
+
+  if (!Array.isArray(citas) || citas.length === 0) {
+    tb.appendChild(h("tr", {}, h("td", { colspan: "5", class: "ads-muted" }, "Sin citas para hoy")));
+  } else {
+    for (const c of citas) {
+      const nombre = `${c.nombre || ""} ${c.apellido_paterno || ""} ${c.apellido_materno || ""}`.trim();
+      const estado = (c.estado_cita || "-").toLowerCase();
+
+      // Acciones SOLO EN HOY
+      let acciones = h("span", { class: "ads-muted" }, "-");
+      if (estado === "programada") {
+        const btnAtendida = h(
+          "button",
+          {
+            class: "ads-btn ads-btn--ghost",
+            type: "button",
+            onclick: async () => {
+              try {
+                await cambiarEstadoCita(c.id_cita, "atendida");
+                showToast("Cita marcada como atendida.", "ok");
+                // refrescar hoy + mover si ya no aplica
+                await setAgendaTab("hoy", { force: true });
+              } catch (e) {
+                showToast(e.message, "error");
+              }
+            },
+          },
+          "Atendida"
+        );
+
+        const btnNoAsistio = h(
+          "button",
+          {
+            class: "ads-btn ads-btn--ghost",
+            type: "button",
+            onclick: async () => {
+              try {
+                await cambiarEstadoCita(c.id_cita, "no asistió");
+                showToast("Cita marcada como no asistió.", "ok");
+                await setAgendaTab("hoy", { force: true });
+              } catch (e) {
+                showToast(e.message, "error");
+              }
+            },
+          },
+          "No asistió"
+        );
+
+        acciones = h("div", { class: "ads-row" }, btnAtendida, btnNoAsistio);
+      }
+
+      // Hora (HH:MM)
+      const dt = c.fecha_hora ? new Date(c.fecha_hora) : null;
+      const hora = dt ? `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}` : "-";
+
+      tb.appendChild(
+        h(
+          "tr",
+          {},
+          h("td", {}, hora),
+          h("td", {}, nombre || "-"),
+          h("td", {}, c.motivo || "-"),
+          h("td", {}, c.estado_cita || "-"),
+          h("td", {}, acciones)
+        )
+      );
+    }
+  }
+
+  wrap.appendChild(table);
+  return wrap;
+}
+
+async function setAgendaTab(key, opts = {}) {
+  agendaCurrentTab = key;
+
+  // activar pestaña
+  document.querySelectorAll("#ads-agenda-subtabs .ads-subtab").forEach((b) => {
+    b.classList.toggle("is-active", b.dataset.key === key);
+  });
+
+  const panel = $("#ads-agenda-panel");
+  panel.innerHTML = h("div", { class: "ads-muted" }, "Cargando…").outerHTML;
+
+  try {
+    // ✅ Importante: si cambias estado en HOY, debes invalidar cache de futuras/historial
+    if (opts.force) agendaCacheFH = null;
+
+    if (key === "hoy") {
+      const hoy = await fetchAgendaHoy(true); // hoy siempre force para que refleje cambios
+      panel.innerHTML = "";
+      panel.appendChild(renderAgendaHoyTabla(hoy.citas));
+
+      // actualiza títulos con contadores
+      $("#ads-agenda-tab-hoy").textContent = `Hoy (${hoy.citas.length})`;
+
+      // también refresca futuras/hist en background para que quede consistente
+      const fh = await fetchAgendaFutHist(true);
+      $("#ads-agenda-tab-prox").textContent = `Próximas (${fh.futuras.length})`;
+      $("#ads-agenda-tab-hist").textContent = `Historial (${fh.historial.length})`;
+      return;
+    }
+
+    const fh = await fetchAgendaFutHist(!!opts.force);
+    $("#ads-agenda-tab-prox").textContent = `Próximas (${fh.futuras.length})`;
+    $("#ads-agenda-tab-hist").textContent = `Historial (${fh.historial.length})`;
+
+    panel.innerHTML = "";
+    if (key === "proximas") panel.appendChild(renderCitasTabla(fh.futuras));
+    if (key === "historial") panel.appendChild(renderCitasTabla(fh.historial));
+  } catch (err) {
+    showToast(err.message, "error");
+    panel.innerHTML = h("div", { class: "ads-muted" }, err.message).outerHTML;
+  }
+}
+
+function viewAgenda() {
   const container = $("#ads-container");
   container.innerHTML = "";
 
-  const card = h("section", { class: "ads-card" },
-    h("div", { class: "ads-card__hd" },
-      h("div", {},
-        h("h2", {}, "Agenda de citas"),
-        h("div", { class: "ads-muted" }, "Citas futuras y atendidas/no asistió")
-      )
+  const card = h(
+    "section",
+    { class: "ads-card" },
+    h(
+      "div",
+      { class: "ads-card__hd" },
+      h("div", {}, h("h2", {}, "Agenda de citas"), h("div", { class: "ads-muted" }, ""))
     ),
-    h("div", { class: "ads-card__bd" },
-      h("div", { id: "ads-agenda" }, "")
+    h(
+      "div",
+      { class: "ads-card__bd" },
+      h(
+        "div",
+        { class: "ads-subtabs", id: "ads-agenda-subtabs" },
+        (() => {
+          const b = agendaTabBtn("hoy", "Hoy (0)");
+          b.id = "ads-agenda-tab-hoy";
+          return b;
+        })(),
+        (() => {
+          const b = agendaTabBtn("proximas", "Próximas (0)");
+          b.id = "ads-agenda-tab-prox";
+          return b;
+        })(),
+        (() => {
+          const b = agendaTabBtn("historial", "Historial (0)");
+          b.id = "ads-agenda-tab-hist";
+          return b;
+        })()
+      ),
+      h("div", { style: "height:14px" }),
+      h("div", { id: "ads-agenda-panel" }, "")
     )
   );
 
   container.appendChild(card);
 
-  try {
-    const data = await api(`/api/medicos/${session.medico.id_medico}/citas`);
-    const host = $("#ads-agenda");
-
-    const futuras = data.futuras || [];
-    const historial = data.historial || [];
-
-    host.innerHTML = "";
-
-    host.appendChild(h("h3", {}, `Próximas (${futuras.length})`));
-    host.appendChild(renderCitasTabla(futuras));
-    host.appendChild(h("div", { style: "height:14px" }));
-    host.appendChild(h("h3", {}, `Historial (${historial.length})`));
-    host.appendChild(renderCitasTabla(historial));
-
-  } catch (err) {
-    showToast(err.message, "error");
-    $("#ads-agenda").innerHTML = h("div", { class: "ads-muted" }, err.message).outerHTML;
-  }
+  // default: Hoy
+  setAgendaTab("hoy", { force: true });
 }
+
 
 function renderCitasTabla(citas) {
   const wrap = h("div", { class: "ads-tablewrap" });
@@ -1321,7 +1770,7 @@ function renderCitasTabla(citas) {
       tb.appendChild(
         h("tr", {},
           h("td", {}, fmtDateTime(c.fecha_hora)),
-          h("td", {}, `${c.paciente_nombre || ""} ${c.paciente_apellido_paterno || ""}`.trim()),
+          h("td", {}, `${c.nombre || ""} ${c.apellido_paterno || ""} ${c.apellido_materno || ""}`.trim()),
           h("td", {}, c.motivo || "-"),
           h("td", {}, c.estado_cita || "-")
         )
@@ -1363,18 +1812,31 @@ async function viewNotasGlobal() {
   );
 
   container.appendChild(card);
+  const sel = $("#ads-notas-paciente");
+sel.disabled = true;
+sel.innerHTML = "";
+sel.appendChild(h("option", { value: "" }, "Cargando pacientes…"));
 
-  await loadPacientes(false);
-  fillNotasSelect();
+
+ await loadPacientes(false);
+fillNotasSelect();
+sel.disabled = false;
+
 
   $("#ads-notas-paciente").addEventListener("change", async (e) => {
-    const id = e.target.value;
-    if (!id) {
-      $("#ads-notas-global-panel").innerHTML = h("div", { class: "ads-muted" }, "Elige un paciente para ver sus notas.").outerHTML;
-      return;
-    }
-    await openExpedienteFromNotas(Number(id));
-  });
+  const id = e.target.value;
+  if (!id) {
+    $("#ads-notas-global-panel").innerHTML =
+      h("div", { class: "ads-muted" }, "Elige un paciente para ver sus notas.").outerHTML;
+    return;
+  }
+
+  $("#ads-notas-global-panel").innerHTML =
+    h("div", { class: "ads-muted" }, "Cargando notas del paciente…").outerHTML;
+
+  await openExpedienteFromNotas(Number(id));
+});
+
 }
 
 function fillNotasSelect() {
@@ -1425,29 +1887,239 @@ async function viewLaboratorioGlobal() {
   const container = $("#ads-container");
   container.innerHTML = "";
 
-  const card = h("section", { class: "ads-card" },
-    h("div", { class: "ads-card__hd" },
+  const card = h(
+    "section",
+    { class: "ads-card" },
+    h(
+      "div",
+      { class: "ads-card__hd" },
       h("div", {},
-        h("h2", {}, "Órdenes de laboratorio"),
-        h("div", { class: "ads-muted" }, "Órdenes generadas por el médico")
+        h("h2", {}, "Laboratorio"),
+        h("div", { class: "ads-muted" }, "Órdenes y resultados del médico")
       )
     ),
-    h("div", { class: "ads-card__bd" },
-      h("div", { id: "ads-lab-global" }, h("div", { class: "ads-muted" }, "Cargando…"))
+    h(
+      "div",
+      { class: "ads-card__bd" },
+
+      // filtros
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "flex:2; min-width:320px;" },
+          h("label", {}, "Buscar"),
+          h("input", { class: "ads-input", id: "ads-lab-buscar", placeholder: "Paciente o ID orden..." })
+        ),
+        h("div", { class: "ads-field", style: "min-width:220px;" },
+          h("label", {}, "Estado"),
+          h("select", { class: "ads-select", id: "ads-lab-estado" },
+            h("option", { value: "" }, "Todos"),
+            h("option", { value: "Solicitada" }, "Solicitada"),
+            h("option", { value: "Resultado Listo" }, "Resultado Listo")
+          )
+        ),
+        h("button", {
+          class: "ads-btn ads-btn--ghost",
+          type: "button",
+          onclick: () => cargarOrdenesMedico(true)
+        }, "Actualizar")
+      ),
+
+      h("div", { style: "height:12px" }),
+
+      // tabla de órdenes
+      h("div", { id: "ads-lab-ordenes-host" },
+        h("div", { class: "ads-muted" }, "Cargando órdenes…")
+      ),
+
+      h("div", { style: "height:14px" }),
+
+      // panel resultados
+      h("div", { id: "ads-lab-resultados-host" },
+        h("div", { class: "ads-muted" }, "Selecciona una orden para ver sus resultados.")
+      )
     )
   );
 
   container.appendChild(card);
 
+  // 👇 importantísimo: para no acumular listeners si entras/sales de la pestaña
+  $("#ads-lab-buscar").oninput = renderOrdenesMedicoTable;
+  $("#ads-lab-estado").onchange = renderOrdenesMedicoTable;
+
+  await cargarOrdenesMedico(false);
+}
+
+let cacheOrdenesMedico = [];
+
+async function cargarOrdenesMedico(force) {
+  const host = $("#ads-lab-ordenes-host");
+  if (!host) return;
+
+  if (!force && cacheOrdenesMedico.length) {
+    renderOrdenesMedicoTable();
+    return;
+  }
+
+  host.innerHTML = h("div", { class: "ads-muted" }, "Cargando órdenes...").outerHTML;
+
   try {
-    // Esta vista depende de tu renderer previo. Si tu backend no tiene ruta, deja el mensaje.
-    // En versiones anteriores se listaban órdenes por médico, si no existe, se puede usar expediente.
-    const host = $("#ads-lab-global");
-    host.innerHTML = h("div", { class: "ads-muted" }, "Esta vista se consulta desde el expediente del paciente (Órdenes/Resultados)." ).outerHTML;
+    const rows = await api(`/api/medicos/${session.medico.id_medico}/ordenes-laboratorio`);
+    cacheOrdenesMedico = Array.isArray(rows) ? rows : [];
+    renderOrdenesMedicoTable();
   } catch (err) {
-    showToast(err.message, "error");
+    host.innerHTML = h("div", { class: "ads-muted" }, `Error: ${err.message}`).outerHTML;
   }
 }
+
+function renderOrdenesMedicoTable() {
+  const host = $("#ads-lab-ordenes-host");
+  if (!host) return;
+
+  const q = ($("#ads-lab-buscar")?.value || "").trim().toLowerCase();
+  const est = ($("#ads-lab-estado")?.value || "").trim().toLowerCase();
+
+  let rows = cacheOrdenesMedico.slice();
+
+  if (q) {
+    rows = rows.filter((o) => {
+      const nombre = `${o.nombre || ""} ${o.apellido_paterno || ""} ${o.apellido_materno || ""}`.toLowerCase();
+      const id = String(o.id_orden || "");
+      return nombre.includes(q) || id.includes(q);
+    });
+  }
+
+  if (est) {
+    rows = rows.filter((o) => (o.estado_orden || "").toLowerCase() === est);
+  }
+
+  if (!rows.length) {
+    host.innerHTML = "";
+    host.appendChild(h("div", { class: "ads-muted" }, "No hay órdenes con esos filtros."));
+    return;
+  }
+
+  const wrap = h("div", { class: "ads-tablewrap" });
+  const table = h("table", { class: "ads-table", style: "min-width:980px" },
+    h("thead", {},
+      h("tr", {},
+        h("th", {}, "Fecha"),
+        h("th", {}, "Orden"),
+        h("th", {}, "Paciente"),
+        h("th", {}, "Estado"),
+        h("th", {}, "Observaciones"),
+        h("th", {}, "Resultados"),
+        h("th", {}, "Acción")
+      )
+    ),
+    h("tbody", {})
+  );
+
+  const tb = table.querySelector("tbody");
+
+  for (const o of rows) {
+    const pacienteNombre = `${o.nombre || ""} ${o.apellido_paterno || ""} ${o.apellido_materno || ""}`.trim();
+
+    const btnVer = h("button", {
+      class: "ads-btn ads-btn--ghost",
+      type: "button",
+      onclick: () => verResultadosOrdenGlobal(o.id_orden, pacienteNombre),
+    }, `Ver (${o.num_resultados || 0})`);
+
+    tb.appendChild(
+      h("tr", {},
+        h("td", {}, fmtDateTime(o.fecha_solicitud)),
+        h("td", {}, String(o.id_orden || "-")),
+        h("td", {}, pacienteNombre),
+        h("td", {}, o.estado_orden || "-"),
+        h("td", {}, o.observaciones || "-"),
+        h("td", {}, String(o.num_resultados || 0)),
+        h("td", {}, btnVer)
+      )
+    );
+  }
+
+  wrap.appendChild(table);
+  host.innerHTML = "";
+  host.appendChild(wrap);
+}
+
+async function verResultadosOrdenGlobal(id_orden, pacienteNombre) {
+  const host = $("#ads-lab-resultados-host");
+  if (!host) return;
+
+  host.innerHTML = h("div", { class: "ads-muted" }, "Cargando resultados...").outerHTML;
+
+  try {
+    const rows = await api(`/api/ordenes-laboratorio/${id_orden}/resultados`);
+
+    const head = h("div", { class: "ads-row", style: "justify-content:space-between; align-items:flex-start;" },
+      h("div", {},
+        h("h3", {}, `Resultados de orden #${id_orden}`),
+        h("div", { class: "ads-muted" }, `Paciente: ${pacienteNombre || "-"}`)
+      ),
+      h("button", {
+        class: "ads-btn ads-btn--ghost",
+        type: "button",
+        onclick: () => {
+          host.innerHTML = h("div", { class: "ads-muted" }, "Selecciona una orden para ver sus resultados.").outerHTML;
+        }
+      }, "Cerrar")
+    );
+
+    if (!Array.isArray(rows) || !rows.length) {
+      host.innerHTML = "";
+      host.appendChild(h("div", { class: "ads-card" }, h("div", { class: "ads-card__bd" }, head,
+        h("div", { class: "ads-muted" }, "Esta orden no tiene resultados todavía.")
+      )));
+      return;
+    }
+
+    const wrap = h("div", { class: "ads-tablewrap" });
+    const table = h("table", { class: "ads-table", style: "min-width:980px" },
+      h("thead", {},
+        h("tr", {},
+          h("th", {}, "Fecha"),
+          h("th", {}, "Estudio"),
+          h("th", {}, "Resultado"),
+          h("th", {}, "Unidad"),
+          h("th", {}, "Referencia"),
+          h("th", {}, "Archivo")
+        )
+      ),
+      h("tbody", {})
+    );
+
+    const tb = table.querySelector("tbody");
+
+    for (const r of rows) {
+      const archivo = r.archivo_ruta
+        ? h("button", { class: "ads-btn ads-btn--ghost", type: "button", onclick: () => abrirArchivo(r.archivo_ruta) }, "Abrir")
+        : h("span", { class: "ads-muted" }, "-");
+
+      tb.appendChild(
+        h("tr", {},
+          h("td", {}, fmtDateTime(r.fecha_resultado)),
+          h("td", {}, r.nombre_estudio || "-"),
+          h("td", {}, r.resultado || "-"),
+          h("td", {}, r.unidad || "-"),
+          h("td", {}, r.valores_referencia || "-"),
+          h("td", {}, archivo)
+        )
+      );
+    }
+
+    wrap.appendChild(table);
+
+    host.innerHTML = "";
+    host.appendChild(
+      h("div", { class: "ads-card" },
+        h("div", { class: "ads-card__bd" }, head, h("div", { style: "height:10px" }), wrap)
+      )
+    );
+  } catch (err) {
+    host.innerHTML = h("div", { class: "ads-muted" }, `Error: ${err.message}`).outerHTML;
+  }
+}
+
 
 // ------------------------------
 // Render principal
