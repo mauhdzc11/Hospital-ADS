@@ -441,6 +441,37 @@ function injectStyles() {
 }
 .ads-mini-item b{ display:block; }
 .ads-mini-item small{ color:var(--muted); font-weight:700; }
+/* Warning (alergias) */
+.ads-alert{
+  border:1px solid var(--line);
+  border-radius: var(--radius2);
+  padding: 12px 14px;
+  background: #fff;
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+}
+
+.ads-alert--warn{
+  border-color: #F5D26A;
+  background: #FFF7DB;
+}
+
+.ads-alert__icon{
+  width:28px; height:28px;
+  border-radius: 10px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-weight: 900;
+  background:#FFE8A3;
+  color:#6B4E00;
+  flex: 0 0 auto;
+}
+
+.ads-alert__txt b{ display:block; margin-bottom:2px; }
+.ads-alert__txt span{ color: var(--muted); font-weight:700; }
+
 
   `;
 
@@ -1099,7 +1130,8 @@ function viewExpediente({ paciente, expediente }) {
     subtabBtn("exp-notas", "Notas de evolución"),
     subtabBtn("exp-recetas", "Recetas médicas"),
     subtabBtn("exp-ordenes", "Órdenes de laboratorio"),
-    subtabBtn("exp-resultados", "Resultados de laboratorio")
+    subtabBtn("exp-resultados", "Resultados de laboratorio"),
+    subtabBtn("exp-urgencias", "Urgencias"),
   );
 
   const body = h("div", { class: "ads-card__bd" },
@@ -1141,6 +1173,7 @@ function setExpSubtab(key, params) {
   if (key === "exp-recetas") return renderRecetasExpediente(panel, params);
   if (key === "exp-ordenes") return renderOrdenesExpediente(panel, params);
   if (key === "exp-resultados") return renderResultadosExpediente(panel, params);
+  if (key === "exp-urgencias") return renderUrgenciasExpediente(panel, params);
 }
 
 async function renderNotasExpediente(panel, { expediente }) {
@@ -1390,6 +1423,20 @@ async function cargarRecetas(id_expediente) {
   const host = $("#ads-rec-table");
   if (!host) return;
   host.innerHTML = h("div", { class: "ads-muted" }, "Cargando recetas…").outerHTML;
+  const alergias = (params?.paciente?.alergias || "").trim();
+
+if (alergias) {
+  panel.appendChild(
+    h("div", { class: "ads-alert ads-alert--warn", style: "margin-bottom:12px;" },
+      h("div", { class: "ads-alert__icon" }, "⚠"),
+      h("div", { class: "ads-alert__txt" },
+        h("b", {}, "Alergias registradas"),
+        h("span", {}, alergias)
+      )
+    )
+  );
+}
+
 
   try {
     const rows = await api(`/api/expedientes/${id_expediente}/recetas`);
@@ -1621,6 +1668,92 @@ async function renderResultadosExpediente(panel, { expediente }) {
   panel.appendChild(h("div", { id: "ads-res-table" }, ""));
   await cargarResultados(expediente.id_expediente);
 }
+
+async function renderUrgenciasExpediente(panel, { paciente }) {
+  panel.innerHTML = "";
+
+  const form = h("div", { class: "ads-card", style: "box-shadow:none;" },
+    h("div", { class: "ads-card__hd" },
+      h("div", {}, h("h3", {}, "Datos de urgencias"), h("div", { class: "ads-muted" }, "Hospital-ADS"))
+    ),
+    h("div", { class: "ads-card__bd" },
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "flex:2; min-width:280px;" },
+          h("label", {}, "Motivo de ingreso"),
+          h("textarea", { class: "ads-textarea", id: "urg-motivo", placeholder: "Motivo...", rows: "2" }, paciente.motivo_ingreso || "")
+        ),
+        h("div", { class: "ads-field", style: "flex:2; min-width:280px;" },
+          h("label", {}, "Enfermedades crónicas"),
+          h("textarea", { class: "ads-textarea", id: "urg-cron", placeholder: "Diabetes, hipertensión...", rows: "2" }, paciente.enfermedades_cronicas || "")
+        )
+      ),
+
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "flex:2; min-width:280px;" },
+          h("label", {}, "Enfermedades hereditarias"),
+          h("textarea", { class: "ads-textarea", id: "urg-her", placeholder: "Antecedentes familiares...", rows: "2" }, paciente.enfermedades_hereditarias || "")
+        ),
+        h("div", { class: "ads-field", style: "flex:2; min-width:280px;" },
+          h("label", {}, "Alergias"),
+          h("input", { class: "ads-input", id: "urg-alerg", placeholder: "Ej. penicilina, nueces...", value: paciente.alergias || "" })
+        )
+      ),
+
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "flex:3; min-width:360px;" },
+          h("label", {}, "Signos vitales"),
+          h("textarea", { class: "ads-textarea", id: "urg-signos", placeholder: "FC, FR, SpO2, etc...", rows: "2" }, paciente.signos_vitales || "")
+        )
+      ),
+
+      h("div", { class: "ads-row" },
+        h("div", { class: "ads-field", style: "min-width:220px;" },
+          h("label", {}, "Presión"),
+          h("input", { class: "ads-input", id: "urg-presion", placeholder: "120/80", value: paciente.presion || "" })
+        ),
+        h("div", { class: "ads-field", style: "min-width:220px;" },
+          h("label", {}, "Temperatura (°C)"),
+          h("input", { class: "ads-input", id: "urg-temp", type: "number", step: "0.1", value: paciente.temperatura ?? "" })
+        ),
+        h("div", { class: "ads-field", style: "min-width:220px;" },
+          h("label", {}, "Glucosa (mg/dL)"),
+          h("input", { class: "ads-input", id: "urg-glu", type: "number", step: "0.1", value: paciente.glucosa ?? "" })
+        ),
+        h("button", { class: "ads-btn", type: "button", onclick: () => guardarUrgencias(paciente.id_paciente) }, "Guardar")
+      )
+    )
+  );
+
+  panel.appendChild(form);
+}
+
+async function guardarUrgencias(id_paciente) {
+  try {
+    const body = {
+      motivo_ingreso: $("#urg-motivo")?.value || "",
+      enfermedades_cronicas: $("#urg-cron")?.value || "",
+      enfermedades_hereditarias: $("#urg-her")?.value || "",
+      alergias: $("#urg-alerg")?.value || "",
+      signos_vitales: $("#urg-signos")?.value || "",
+      presion: $("#urg-presion")?.value || "",
+      temperatura: $("#urg-temp")?.value || "",
+      glucosa: $("#urg-glu")?.value || "",
+    };
+
+    await api(`/api/pacientes/${id_paciente}/urgencias`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+
+    // actualizar cache local del paciente actual
+    Object.assign(currentView.params.paciente, body);
+
+    showToast("Datos de urgencias guardados.", "ok");
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
 
 function abrirArchivo(rutaRelativa) {
   if (!rutaRelativa) return;

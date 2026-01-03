@@ -144,6 +144,55 @@ async function ensureSchemaMinimo() {
       INDEX idx_historial_fecha (fecha_cambio)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  // 5) Datos mínimos de urgencias (RF-5)
+await addColumnIfMissing(
+  'pacientes',
+  'alergias',
+  `ALTER TABLE pacientes ADD COLUMN alergias TEXT NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'enfermedades_cronicas',
+  `ALTER TABLE pacientes ADD COLUMN enfermedades_cronicas TEXT NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'enfermedades_hereditarias',
+  `ALTER TABLE pacientes ADD COLUMN enfermedades_hereditarias TEXT NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'motivo_ingreso',
+  `ALTER TABLE pacientes ADD COLUMN motivo_ingreso TEXT NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'signos_vitales',
+  `ALTER TABLE pacientes ADD COLUMN signos_vitales TEXT NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'presion',
+  `ALTER TABLE pacientes ADD COLUMN presion VARCHAR(50) NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'temperatura',
+  `ALTER TABLE pacientes ADD COLUMN temperatura DECIMAL(5,2) NULL`
+);
+
+await addColumnIfMissing(
+  'pacientes',
+  'glucosa',
+  `ALTER TABLE pacientes ADD COLUMN glucosa DECIMAL(6,2) NULL`
+);
+
 
   console.log('✅ Migraciones mínimas listas');
 }
@@ -531,7 +580,15 @@ app.get('/api/pacientes/:id_paciente/resumen-expediente', async (req, res) => {
          correo,
          direccion,
          estatus_afiliacion,
-         triage
+         triage,
+         alergias,
+         enfermedades_cronicas,
+         enfermedades_hereditarias,
+         motivo_ingreso,
+         signos_vitales,
+         presion,
+         temperatura,
+         glucosa
        FROM pacientes
        WHERE id_paciente = ?
        LIMIT 1`,
@@ -596,6 +653,55 @@ app.get('/api/medicos/:id_medico/pacientes', async (req, res) => {
     res.status(500).json({ error: 'Error al obtener pacientes del médico.' });
   }
 });
+
+// Guardar datos mínimos de urgencias (RF-5)
+app.patch('/api/pacientes/:id_paciente/urgencias', async (req, res) => {
+  try {
+    const { id_paciente } = req.params;
+
+    const {
+      enfermedades_cronicas,
+      enfermedades_hereditarias,
+      motivo_ingreso,
+      signos_vitales,
+      presion,
+      temperatura,
+      glucosa,
+      alergias,
+    } = req.body;
+
+    await pool.query(
+      `UPDATE pacientes
+       SET enfermedades_cronicas = ?,
+           enfermedades_hereditarias = ?,
+           motivo_ingreso = ?,
+           signos_vitales = ?,
+           presion = ?,
+           temperatura = ?,
+           glucucosa = glucosa, -- (ignorar)
+           glucosa = ?,
+           alergias = ?
+       WHERE id_paciente = ?`,
+      [
+        enfermedades_cronicas || null,
+        enfermedades_hereditarias || null,
+        motivo_ingreso || null,
+        signos_vitales || null,
+        presion || null,
+        (temperatura === "" || temperatura === null || temperatura === undefined) ? null : Number(temperatura),
+        (glucosa === "" || glucosa === null || glucosa === undefined) ? null : Number(glucosa),
+        alergias || null,
+        id_paciente
+      ]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error urgencias:", err);
+    res.status(500).json({ error: "No se pudieron guardar los datos de urgencias." });
+  }
+});
+
 
 // ------------------------------------------
 // 6) CITAS (PORTAL PACIENTE + MÓDULO MÉDICO)
@@ -1012,6 +1118,13 @@ app.get('/api/expedientes/:id_expediente/recetas', async (req, res) => {
          archivo_nombre_original,
          archivo_ruta,
          archivo_tipo,
+         fecha_vigencia,
+         descripcion,
+         medicamentos,
+         indicaciones,
+         archivo_nombre_original,
+         archivo_ruta,
+         archivo_tipo,
          fecha_vigencia
        FROM recetas_medicas
        WHERE id_paciente = ?
@@ -1033,18 +1146,12 @@ app.post(
   async (req, res) => {
     try {
       const { id_expediente } = req.params;
-      const { id_medico, descripcion } = req.body;
+      const { id_medico, descripcion, medicamentos, indicaciones } = req.body;
 
       // 1) Validaciones básicas
       if (!id_medico) {
         return res.status(400).json({
           error: 'El id_medico es obligatorio.',
-        });
-      }
-
-      if (!req.file) {
-        return res.status(400).json({
-          error: 'Debes adjuntar el archivo de la receta.',
         });
       }
 
@@ -1063,36 +1170,57 @@ app.post(
 
       const idPaciente = expRows[0].id_paciente;
 
+      //cambios aqui empiezan
+      // --- RF-7 Validación de alergias ---
+const [alRows] = await pool.query(
+  `SELECT alergias FROM pacientes WHERE id_paciente = ? LIMIT 1`,
+  [idPaciente]
+);
+
+const alergiasTxt = (alRows?.[0]?.alergias || "").toString().toLowerCase();
+const medsTxt = (medicamentos || "").toString().toLowerCase();
+
+if (alergiasTxt && medsTxt) {
+  const alergias = alergiasTxt
+    .split(/[,;]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const match = alergias.filter(a => a && medsTxt.includes(a));
+  if (match.length) {
+    return res.status(400).json({
+      error: `No se puede finalizar la receta: el paciente tiene alergias registradas relacionadas con: ${match.join(", ")}.`
+    });
+  }
+}
+//cambios aqui terminan
+
       // 3) Datos del archivo
-      const rutaRelativa = path.join('uploads', 'recetas', req.file.filename);
+      const rutaRelativa = req.file ? path.join('uploads', 'recetas', req.file.filename) : null;
+const nombreOriginal = req.file ? req.file.originalname : null;
+const tipoArchivo = req.file ? req.file.mimetype : null;
 
-      // Vigencia: 3 días hábiles (L-V) en farmacia del hospital
-      const fechaVigencia = toMysqlDateTime(addBusinessDays(new Date(), 3));
+const fechaVigencia = toMysqlDateTime(addBusinessDays(new Date(), 3));
 
-      // 4) Insertar la receta en la tabla recetas_medicas
-      const [result] = await pool.query(
-        `INSERT INTO recetas_medicas
-         (id_paciente,
-          id_medico,
-          fecha_receta,
-          fecha_vigencia,
-          descripcion,
-          medicamentos,
-          indicaciones,
-          archivo_nombre_original,
-          archivo_ruta,
-          archivo_tipo)
-         VALUES (?, ?, NOW(), ?, ?, NULL, NULL, ?, ?, ?)`,
-        [
-          idPaciente,
-          id_medico,
-          fechaVigencia,
-          descripcion || null,
-          req.file.originalname,
-          rutaRelativa,
-          req.file.mimetype,
-        ]
-      );
+const [result] = await pool.query(
+  `INSERT INTO recetas_medicas
+   (id_paciente, id_medico, fecha_receta, fecha_vigencia,
+    descripcion, medicamentos, indicaciones,
+    archivo_nombre_original, archivo_ruta, archivo_tipo)
+   VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?)`,
+  [
+    idPaciente,
+    id_medico,
+    fechaVigencia,
+    descripcion || null,
+    medicamentos || null,
+    indicaciones || null,
+    nombreOriginal,
+    rutaRelativa,
+    tipoArchivo,
+  ]
+);
+
 
       res.status(201).json({
         ok: true,
